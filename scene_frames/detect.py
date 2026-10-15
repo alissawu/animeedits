@@ -1,6 +1,6 @@
 """Split a video into shots and save the best frame of each.
 
-usage: python detect.py INPUT OUT_DIR [--prefer-faces]
+usage: python detect.py INPUT OUT_DIR [--faces live|anime]
 See docs/frame_selection.md.
 """
 import argparse, json, os
@@ -9,6 +9,7 @@ from scenedetect import detect, ContentDetector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 YUNET = os.path.join(HERE, "models", "face_detection_yunet_2023mar.onnx")
+ANIME = os.path.join(HERE, "models", "lbpcascade_animeface.xml")
 N_CHUNKS = 3
 
 
@@ -20,7 +21,19 @@ def score_frame(fr):
     return np.log1p(sharp) * 0.5 + np.log1p(contrast) * 0.35 + max(expo, 0) * 0.15 * 5
 
 
+def make_detector(kind):
+    if kind == "live":
+        return cv2.FaceDetectorYN.create(YUNET, "", (320, 320), 0.7)
+    if kind == "anime":
+        return cv2.CascadeClassifier(ANIME)
+    return None
+
+
 def has_face(det, img):
+    if isinstance(det, cv2.CascadeClassifier):
+        g = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        m = min(g.shape) // 12
+        return len(det.detectMultiScale(g, 1.1, 5, minSize=(m, m))) > 0
     h, w = img.shape[:2]
     det.setInputSize((w, h))
     _, faces = det.detect(img)
@@ -38,10 +51,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("out_dir")
-    ap.add_argument("--prefer-faces", action="store_true", help="pick best frame with a face if any chunk winner has one")
+    ap.add_argument("--faces", choices=["live", "anime"], help="prefer frames with a face, using a live-action or anime detector")
     a = ap.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
-    det = cv2.FaceDetectorYN.create(YUNET, "", (320, 320), 0.7) if a.prefer_faces else None
+    det = make_detector(a.faces)
     n_chunks = N_CHUNKS if det else 1
 
     scenes = [(s.frame_num, e.frame_num) for s, e in detect(a.input, ContentDetector(threshold=20, min_scene_len=4))]
