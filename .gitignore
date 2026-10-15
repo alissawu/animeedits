@@ -12,3 +12,6 @@ out/
 *.wav
 *.m4a
 *.flac
+*.jpg
+*.jpeg
+*.png
