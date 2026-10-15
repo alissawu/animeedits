@@ -12,7 +12,7 @@ Writes `scenes.json` and `scene_0004_005.90s.jpg`-style stills. Omit `--sample` 
 
 ## Index
 ```sh
-python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --captioner claude --context context.md
+python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
 Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
@@ -21,8 +21,8 @@ Builds numbered contact sheets of keyframes and captions them with Claude in par
 
 `--captioner` picks how sheets reach Claude. All three send the same prompt and sheet and validate replies the same way:
 
-- `api` (default): the Anthropic API, billed as API usage. Needs `ANTHROPIC_API_KEY` or an `ant auth login` profile; Claude Code's sign-in doesn't reach the API.
-- `claude`: one `claude -p` call per sheet, on your Claude Code sign-in, so there's no key to manage. It loads no tools, settings, MCP servers or CLAUDE.md, and drops `ANTHROPIC_API_KEY` from its environment so the sign-in is what gets used. It pins `--caption-model` exactly: aliases such as "haiku" can be remapped in Claude Code settings, so a full model ID is checked against the model that actually ran. A mismatch stops the run. Each sheet takes about 15 s with Haiku 5.5.
+- `claude` (default): one `claude -p` call per sheet, on your Claude Code sign-in, so there's no key to manage. It loads no tools, settings, MCP servers or CLAUDE.md, and drops `ANTHROPIC_API_KEY` from its environment so the sign-in is what gets used. It pins `--caption-model` exactly: aliases such as "haiku" can be remapped in Claude Code settings, so a full model ID is checked against the model that actually ran. A mismatch stops the run. Each sheet takes about 15 s with Haiku 5.5.
+- `api`: the Anthropic API, billed as API usage, for running without Claude Code. Needs `ANTHROPIC_API_KEY` or an `ant auth login` profile; Claude Code's sign-in doesn't reach the API.
 - `agent`: writes a jobs file for Claude Code subagents to answer, see [Captioning with agents](#captioning-with-agents). It's for when an interactive session should do the work. Subagents run whatever model their alias maps to.
 
 `api` and `claude` share cached captions for the same `--caption-model`, so switching between them doesn't re-caption.
@@ -84,7 +84,7 @@ The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks 
 
 Whisper runs with voice-activity detection by default, which keeps it from inventing lines over music and silence. On edits, where dialogue is mixed under a song, it can drop every line: on the White Light reference edit it removed both. Use `--no-vad` there.
 
-Defaults are `--captioner api`, `--caption-model claude-haiku-5-5`, `--workers 4` (sheets captioned at once), `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
+Defaults are `--captioner claude`, `--caption-model claude-haiku-5-5`, `--workers 4` (sheets captioned at once), `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
 
 ### shots.json
 

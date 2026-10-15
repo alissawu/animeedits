@@ -211,7 +211,8 @@ class SyntheticVideoTests(unittest.TestCase):
         fake.CredentialsError = CredentialsError  # type: ignore[attr-defined]
 
         def run(*args: str) -> list[Any]:
-            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", *args]
+            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", "--captioner", "api",
+                    *args]
             with mock.patch.object(sys, "argv", argv), mock.patch.dict(sys.modules, {"anthropic": fake}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 index.main()
@@ -267,7 +268,7 @@ class SyntheticVideoTests(unittest.TestCase):
         self.assertEqual([p.name for p in (out / "sheets").iterdir()], ["sheet_0001.jpg"], "stale sheets removed")
 
     def test_index_claude_captioner(self) -> None:
-        """--captioner claude: one `claude -p` per sheet with the pinned model, sharing the API's caption cache."""
+        """The default captioner: one `claude -p` per sheet with the pinned model, sharing the API's cache."""
         out, bin_dir, log = self.root / "claude", self.root / "bin", self.root / "claude-calls.jsonl"
         bin_dir.mkdir(exist_ok=True)
         # A stand-in for Claude Code: logs its arguments, input and auth env, and answers in stream-json.
@@ -299,7 +300,7 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "m
         def calls() -> list[dict[str, Any]]:
             return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
-        shots = run("--captioner", "claude", "--title", "Test Pattern")
+        shots = run("--title", "Test Pattern")
         self.assertEqual([s["caption"] for s in shots], ["cli shot 1", "cli shot 2", "cli shot 3"])
         self.assertEqual(sorted(c["ids"] for c in calls()), [[1, 2], [3]], "sheets are captioned in parallel")
         first = next(c for c in calls() if c["ids"] == [1, 2])

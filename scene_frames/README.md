@@ -1,6 +1,6 @@
 # scene_frames
 
-Detect shots with `detect.py VIDEO OUT_DIR`: per shot, a keyframe, first and last frames, a motion curve with its peaks, flashes and look stats. Build the full index for an edit director with `index.py VIDEO OUT_DIR`, which adds captions, word-timed dialogue and optional embedded subtitles in `shots.json`. Captions come from the Claude API, or with no API key from `claude -p` on your Claude Code sign-in (`--captioner claude`) or from Claude Code agents (`--captioner agent`).
+Detect shots with `detect.py VIDEO OUT_DIR`: per shot, a keyframe, first and last frames, a motion curve with its peaks, flashes and look stats. Build the full index for an edit director with `index.py VIDEO OUT_DIR`, which adds captions, word-timed dialogue and optional embedded subtitles in `shots.json`. By default, captions come from `claude -p` on your Claude Code sign-in, with no API key. `--captioner api` uses the Claude API and `--captioner agent` hands sheets to Claude Code agents.
 
 Needs Python 3.11+, `requirements.txt` and ffmpeg/ffprobe. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 

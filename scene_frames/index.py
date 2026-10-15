@@ -538,8 +538,8 @@ def main() -> None:
     ap.add_argument("video", type=Path)
     ap.add_argument("out_dir", type=Path)
     add_detection_args(ap)
-    ap.add_argument("--captioner", choices=["api", "claude", "agent"], default="api",
-                    help="api: the Anthropic API (needs a key); claude: `claude -p` on your Claude Code sign-in; "
+    ap.add_argument("--captioner", choices=["claude", "api", "agent"], default="claude",
+                    help="claude: `claude -p` on your Claude Code sign-in; api: the Anthropic API (needs a key); "
                          "agent: write caption_jobs.json for Claude Code agents")
     ap.add_argument("--caption-model", default="claude-haiku-5-5", help="model for --captioner api and claude")
     ap.add_argument("--title", help="what the video is, e.g. a show and season; default: --context's # heading")
@@ -636,7 +636,8 @@ def main() -> None:
         print(f"{len(pending)} sheets need captions: follow {jobs_file}", flush=True)
     elif jobs and a.captioner == "claude":
         if shutil.which("claude") is None:
-            raise SystemExit("--captioner claude needs Claude Code's `claude` command on PATH")
+            raise SystemExit("--captioner claude needs Claude Code's `claude` command on PATH; "
+                             "install Claude Code, or caption with --captioner api or agent")
         captions.update(run_captioner(
             jobs, lambda job: caption_sheet_cli(job.shots, job.sheet, a.caption_model, title, cast_notes), a.workers))
     elif jobs:
