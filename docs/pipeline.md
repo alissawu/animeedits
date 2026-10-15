@@ -24,9 +24,16 @@ Defaults are `--caption-model claude-haiku-4-5`, `--workers 4`, `--whisper-model
 
 Detection, each sheet's captions, and the transcript are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and relevant options, so changed settings invalidate the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
 
+## Render
+```sh
+python scene_frames/render.py EDL.json OUT.mp4
+```
+
+Renders an edit decision list to a frame-accurate MP4. It also writes `edl_table.md` (time, source time, sync, why) and `proof.jpg` (the frames either side of every cut, labeled with time and why). `--check` validates the EDL and its sources without rendering. Every problem is listed with its JSON path, e.g. `clips[3].src_out`. Each clip is cached as an exact-length segment in `render_cache/`, so re-renders redo only changed clips. One ffmpeg filtergraph then composites the rest. Use `--verbose` to print the ffmpeg commands as a starting point for effects the schema lacks.
+
+The EDL is JSON; the full schema is the docstring of `scene_frames/edl.py`. `output` sets width, height and fps. `song` is one continuous window (`source`, `src_in`, `src_out`, optional `speed` and fades), and its length ÷ speed is the output length. `clips` give `source`, `src_in`, `src_out`, `timeline_in`, the required `sync` (beat, drop, word, phrase_end, motion, free) and `why`. Optional clip fields are `speed`, `reverse`, `crop` (zoom and focus point, animated by `end`), `color` and `transition` (cut, white or black flash, or crossfade, in frames). `audio` layers lift dialogue and can duck the song. `overlays` composite images or video, `captions` support a word or character typewriter reveal, and `ending.fade_to_black` closes the edit. Timeline times snap to output frames, and gaps between clips are black.
+
 ## Future stages
 Director takes shots.json, song lyrics/beats and an edit move library. Opus chooses the story and writes an edit decision list (EDL) containing source in/out points, timing and effects.
 
-Render turns that EDL into an MP4 with ffmpeg.
-
-Critic watches the result and gives notes for another director/render pass. These three stages are planned, not implemented here.
+Critic watches the result and gives notes for another director/render pass. Director and Critic are planned, not implemented here.

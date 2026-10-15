@@ -1,0 +1,304 @@
+"""render.py and edl.py on tiny synthetic sources. Needs ffmpeg on PATH."""
+import copy
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Any
+import unittest
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
+from edl import EdlError, Output, parse_edl
+import render
+
+FPS = 20
+W, H = 72, 128  # 9:16 output from 64x36 (16:9) sources
+SR = render.SAMPLE_RATE
+
+# Output frames (20 fps): red 0-19 | white flash 20-22, green 23-39 | green->blue crossfade 40-43,
+# blue 44-59 | black 60-63 | black->red crossfade 64-67, red 68-79, fade to black 74-79.
+EDL: dict[str, Any] = {
+    "title": "Synthetic",
+    "output": {"width": W, "height": H, "fps": FPS},
+    "song": {"source": "song.wav", "src_in": 0.5, "src_out": 4.5},
+    "clips": [
+        {"source": "red.mp4", "src_in": 0.0, "src_out": 1.0, "timeline_in": 0.0,
+         "sync": "free", "why": "Open on red."},
+        {"source": "green.mp4", "src_in": 1.0, "src_out": 2.0, "timeline_in": 1.0,
+         "sync": "drop", "why": "White flash into green on the drop.",
+         "transition": {"type": "flash", "color": "white", "frames": 3}},
+        {"source": "blue.mp4", "src_in": 0.5, "src_out": 1.5, "timeline_in": 2.0,
+         "sync": "beat", "why": "Dissolve to blue.", "transition": {"type": "crossfade", "frames": 4}},
+        {"source": "red.mp4", "src_in": 2.0, "src_out": 2.8, "timeline_in": 3.2,
+         "sync": "phrase_end", "why": "Back to red out of black.", "transition": {"type": "crossfade", "frames": 4}},
+    ],
+    "audio": [{"source": "dialogue.mp4", "src_in": 1.0, "src_out": 2.0, "timeline_in": 1.5,
+               "duck_db": -12, "why": "The 1 kHz line."}],
+    "overlays": [{"source": "dot.png", "timeline_in": 0.5, "timeline_out": 0.75, "width": 0.25}],
+    "captions": [{"text": "Hello there world", "timeline_in": 0.25, "timeline_out": 2.95,
+                  "style": {"size": 0.12, "y": 0.85}, "reveal": {"unit": "word", "seconds": 0.5}}],
+    "ending": {"fade_to_black": 0.3},
+}
+
+# 24 fps ramp source whose luma encodes the source frame number: Y = 16 + 4 * frame.
+RAMP_EDL: dict[str, Any] = {
+    "output": {"width": 32, "height": 32, "fps": 24},
+    "song": {"source": "song.wav", "src_in": 0.0, "src_out": 3.0, "speed": 2.0},
+    "clips": [
+        {"source": "ramp.mp4", "src_in": 0.5, "src_out": 1.0, "timeline_in": 0.0, "sync": "free", "why": "forward"},
+        {"source": "ramp.mp4", "src_in": 0.5, "src_out": 1.0, "timeline_in": 0.5, "sync": "free", "why": "reversed",
+         "reverse": True},
+        {"source": "ramp.mp4", "src_in": 0.0, "src_out": 1.0, "timeline_in": 1.0, "sync": "motion", "why": "double speed",
+         "speed": 2.0},
+    ],
+}
+
+
+def ffmpeg(*args: str) -> None:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+
+def make_sources(root: Path) -> None:
+    for name, color in (("red", "red"), ("green", "lime"), ("blue", "blue")):
+        ffmpeg("-f", "lavfi", "-i", f"color=c={color}:s=64x36:r=24:d=4", "-c:v", "libx264", "-preset", "ultrafast",
+               "-crf", "18", "-pix_fmt", "yuv420p", str(root / f"{name}.mp4"))
+    ffmpeg("-f", "lavfi", "-i", "color=c=lime:s=64x36:r=24:d=3", "-f", "lavfi", "-i", "sine=f=1000:d=3:sample_rate=48000",
+           "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+           str(root / "dialogue.mp4"))
+    ffmpeg("-f", "lavfi", "-i", "sine=f=440:d=6:sample_rate=44100", str(root / "song.wav"))
+    ffmpeg("-f", "lavfi", "-i", "color=c=yellow:s=16x16", "-frames:v", "1", str(root / "dot.png"))
+    ffmpeg("-f", "lavfi", "-i", "color=c=black:s=64x36:r=24:d=2,geq=lum='16+4*N':cb=128:cr=128",
+           "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv420p", str(root / "ramp.mp4"))
+
+
+def decode_rgb(video: Path, width: int, height: int) -> np.ndarray:
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3).astype(int)
+
+
+def decode_luma(video: Path, width: int, height: int) -> np.ndarray:
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"],
+                         capture_output=True, check=True).stdout
+    frames = np.frombuffer(raw, np.uint8).reshape(-1, width * height * 3 // 2)
+    return frames[:, :width * height].reshape(-1, height, width).astype(int)
+
+
+def decode_audio(video: Path) -> np.ndarray:
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32)
+
+
+def tone(audio: np.ndarray, freq: float, start: float, end: float) -> float:
+    """Amplitude of a sine at `freq` in [start, end) seconds."""
+    chunk = audio[round(start * SR):round(end * SR)]
+    t = np.arange(len(chunk)) / SR
+    return float(2 * abs(np.dot(chunk, np.exp(-2j * np.pi * freq * t))) / len(chunk))
+
+
+def write_edl(root: Path, name: str, edl: dict[str, Any]) -> Path:
+    path = root / name
+    path.write_text(json.dumps(edl, indent=2))
+    return path
+
+
+@unittest.skipIf(shutil.which("ffmpeg") is None, "ffmpeg not on PATH")
+class RenderTests(unittest.TestCase):
+    tmp: tempfile.TemporaryDirectory[str]
+    root: Path
+    summary: str
+    frames: np.ndarray
+    audio: np.ndarray
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory(prefix="render-test-")
+        cls.root = Path(cls.tmp.name)
+        make_sources(cls.root)
+        cls.summary = render.render(write_edl(cls.root, "edit.json", EDL), cls.root / "out" / "edit.mp4", jobs=2)
+        cls.frames = decode_rgb(cls.root / "out" / "edit.mp4", W, H)
+        cls.audio = decode_audio(cls.root / "out" / "edit.mp4")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def color(self, frame: int) -> np.ndarray:
+        """Mean color of an area no caption or overlay touches."""
+        return self.frames[frame, 8:40, 8:64].reshape(-1, 3).mean(0)
+
+    def assertColor(self, frame: int, rgb: tuple[float, float, float], tol: float = 10) -> None:
+        got = self.color(frame)
+        self.assertTrue(np.all(abs(got - rgb) <= tol), f"frame {frame}: got {got.round()}, expected {rgb}")
+
+    def test_length_matches_song_window(self) -> None:
+        self.assertEqual(len(self.frames), 80)
+        self.assertLess(abs(len(self.audio) - 4.0 * SR), 1024)
+
+    def test_hard_cut_and_flash_land_on_exact_frames(self) -> None:
+        red, white, green = (250, 0, 0), (253, 253, 253), (0, 252, 0)
+        for frame in range(20):
+            self.assertColor(frame, red)
+        for frame in (20, 21, 22):
+            self.assertColor(frame, white)
+        for frame in range(23, 40):
+            self.assertColor(frame, green)
+
+    def test_crossfade_blends_over_its_frames(self) -> None:
+        self.assertColor(39, (0, 252, 0))
+        for k, frame in enumerate(range(40, 44)):
+            w = (k + 1) / 5
+            self.assertColor(frame, (0, 252 * (1 - w), 253 * w))
+        self.assertColor(44, (0, 0, 253))
+
+    def test_gap_fade_from_black_and_ending(self) -> None:
+        self.assertColor(59, (0, 0, 253))
+        for frame in range(60, 64):
+            self.assertColor(frame, (0, 0, 0))
+        for k, frame in enumerate(range(64, 68)):  # fade up from black
+            self.assertColor(frame, (250 * (k + 1) / 5, 0, 0))
+        for k, frame in enumerate(range(74, 80)):  # fade to black, last frame black
+            self.assertColor(frame, (250 * (5 - k) / 6, 0, 0))
+
+    def test_overlay_shows_only_in_its_range(self) -> None:
+        centre = self.frames[:, 58:70, 30:42].reshape(len(self.frames), -1, 3).mean(1)
+        yellow = [bool(np.all(abs(c - (250, 250, 0)) < 20)) for c in centre]
+        self.assertEqual([f for f, y in enumerate(yellow) if y], list(range(10, 15)))
+
+    def test_caption_types_on_word_by_word(self) -> None:
+        band = self.frames[:, 88:128]
+        background = self.frames[:, 8:40, 8:64].reshape(len(self.frames), -1, 3).mean(1)
+        ink = [int((abs(band[f] - background[f]).sum(axis=2) > 120).sum()) for f in range(len(self.frames))]
+        self.assertEqual(ink[4], 0)
+        self.assertEqual(len({ink[f] for f in range(5, 10)}), 1)  # word 1 from frame 5
+        self.assertGreater(ink[10], ink[9])  # word 2 at frame 10
+        self.assertGreater(ink[15], ink[14])  # word 3 at frame 15
+        self.assertEqual(ink[15], ink[19])
+        self.assertGreater(ink[58], 0)
+        self.assertEqual(ink[59], 0)  # gone after timeline_out
+
+    def test_dialogue_layer_ducks_the_song(self) -> None:
+        self.assertLess(tone(self.audio, 1000, 0.5, 1.4), 0.005)
+        self.assertGreater(tone(self.audio, 1000, 1.6, 2.4), 0.05)
+        self.assertLess(tone(self.audio, 1000, 2.6, 3.5), 0.005)
+        ratio = tone(self.audio, 440, 1.6, 2.4) / tone(self.audio, 440, 0.5, 1.4)
+        self.assertAlmostEqual(ratio, 10 ** (-12 / 20), delta=0.04)
+
+    def test_writes_proof_and_table(self) -> None:
+        out = self.root / "out"
+        table = (out / "edl_table.md").read_text()
+        for clip in EDL["clips"]:
+            self.assertIn(clip["why"], table)
+        self.assertIn("| 2 | 1.000–2.000 | 20 | green.mp4 | 1.000–2.000 | 1× | white flash 3f | drop |", table)
+        self.assertIn("| | 3.000–3.200 | 4 | black |", table)
+        with Image.open(out / "proof.jpg") as im:
+            self.assertGreater(im.height, 5 * 128)
+
+    def test_rerender_reuses_segments_and_ignores_why(self) -> None:
+        out = self.root / "reworded"
+        shutil.copytree(self.root / "out" / render.CACHE_DIR, out / render.CACHE_DIR)
+        edl = copy.deepcopy(EDL)
+        edl["clips"][0]["why"] = "Reworded reasoning."
+        summary = render.render(write_edl(self.root, "reworded.json", edl), out / "edit.mp4")
+        self.assertIn("0 segments rendered", summary)
+        self.assertIn("Reworded reasoning.", (out / "edl_table.md").read_text())
+
+    def test_source_timing_reverse_and_speed(self) -> None:
+        out = self.root / "ramp" / "ramp.mp4"
+        render.render(write_edl(self.root, "ramp.json", RAMP_EDL), out)
+        luma = decode_luma(out, 32, 32)[:, 8:24, 8:24].mean(axis=(1, 2))
+        self.assertEqual(len(luma), 36)
+        source_frame = np.round((luma - 16) / 4).astype(int).tolist()
+        self.assertEqual(source_frame[:12], list(range(12, 24)))
+        self.assertEqual(source_frame[12:24], list(range(23, 11, -1)))
+        self.assertEqual(source_frame[24:], list(range(0, 24, 2)))
+        song = decode_audio(out)
+        self.assertGreater(tone(song, 880, 0.2, 1.2), 5 * tone(song, 440, 0.2, 1.2))  # 2x speed doubles pitch
+
+
+class EdlValidationTests(unittest.TestCase):
+    def problems(self, edl: dict[str, object]) -> list[str]:
+        with self.assertRaises(EdlError) as ctx:
+            parse_edl(edl)
+        return ctx.exception.problems
+
+    def test_valid_edl_keeps_reasoning(self) -> None:
+        edl = parse_edl(EDL)
+        self.assertEqual([c.sync for c in edl.clips], ["free", "drop", "beat", "phrase_end"])
+        self.assertEqual(edl.clips[1].why, "White flash into green on the drop.")
+
+    def test_reasoning_is_required(self) -> None:
+        edl = copy.deepcopy(EDL)
+        del edl["clips"][0]["why"]
+        edl["clips"][1]["sync"] = "vibes"
+        problems = self.problems(edl)
+        self.assertIn("clips[0].why: required", problems)
+        self.assertIn('clips[1].sync: must be one of beat, drop, word, phrase_end, motion, free, got "vibes"', problems)
+        edl = copy.deepcopy(EDL)
+        edl["clips"][2]["why"] = "  "
+        self.assertIn("clips[2].why: must say what the cut means and why it is here", self.problems(edl))
+
+    def test_unknown_field_suggests_fix(self) -> None:
+        edl = copy.deepcopy(EDL)
+        edl["clips"][0]["src_ot"] = 1.0
+        self.assertIn("clips[0].src_ot: unknown field (did you mean 'src_out'?)", self.problems(edl))
+
+    def test_overlap_and_overrun(self) -> None:
+        edl = copy.deepcopy(EDL)
+        edl["clips"][0]["src_out"] = 1.1
+        edl["clips"][3]["src_out"] = 3.2
+        problems = self.problems(edl)
+        self.assertTrue(any(p.startswith("clips[1]: starts at 1.000 s (frame 20), 2 frame(s) before clips[0] ends")
+                            and "clips[0].src_out = 1.0000" in p for p in problems), problems)
+        self.assertTrue(any(p.startswith("clips[3]: ends at 4.400 s (frame 88), after the song window ends at 4.000 s")
+                            for p in problems), problems)
+
+    def test_transition_and_reveal_checks(self) -> None:
+        edl = copy.deepcopy(EDL)
+        edl["clips"][1]["transition"]["frames"] = 20
+        edl["captions"][0]["reveal"] = {"unit": "word", "times": [0.3, 0.4]}
+        problems = self.problems(edl)
+        self.assertIn("clips[1].transition.frames: a flash needs 1 to 19 frames for this 20-frame clip, got 20", problems)
+        self.assertIn("captions[0].reveal.times: needs one time per word (3), got 2", problems)
+
+    def test_missing_and_short_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=32x18:r=24:d=1", "-pix_fmt", "yuv420p", str(root / "short.mp4"))
+            ffmpeg("-f", "lavfi", "-i", "sine=d=6", str(root / "song.wav"))
+            edl = copy.deepcopy(EDL)
+            for clip in edl["clips"]:
+                clip["source"] = "short.mp4"
+            edl["clips"][1]["source"] = "missing.mp4"
+            with self.assertRaises(EdlError) as ctx:
+                render.render(write_edl(root, "edl.json", edl), None)
+            problems = ctx.exception.problems
+            self.assertIn(f"clips[1].source: file not found: {(root / 'missing.mp4').resolve()}", problems)
+            self.assertIn("clips[3].src_out: 2.800 s is past the end of short.mp4 (1.000 s)", problems)
+            self.assertIn(f"audio[0].source: file not found: {(root / 'dialogue.mp4').resolve()}", problems)
+
+
+class CaptionLayoutTests(unittest.TestCase):
+    def test_reveal_units_map_to_characters(self) -> None:
+        caption = parse_edl(EDL).captions[0]
+        font = render.load_font(None, 20, Path("."))
+        lines = render.layout_caption(caption, font, Output(width=1000, height=200, fps=20))
+        self.assertEqual([line.text for line in lines], ["Hello there world"])
+        self.assertEqual(lines[0].words, (0,) * 5 + (-1,) + (1,) * 5 + (-1,) + (2,) * 5)
+        self.assertEqual(lines[0].chars, tuple(range(5)) + (-1,) + tuple(range(5, 10)) + (-1,) + tuple(range(10, 15)))
+
+    def test_long_words_wrap_and_split(self) -> None:
+        font = render.load_font(None, 20, Path("."))
+        lines = render.wrap(["a", "Supercalifragilistic", "b"], font, font.getlength("Supercal"))
+        self.assertEqual([[w for w, _ in line] for line in lines][0], [0])
+        self.assertEqual("".join(t for line in lines for w, t in line if w == 1), "Supercalifragilistic")
+        self.assertTrue(all(font.getlength(" ".join(t for _, t in line)) <= font.getlength("Supercal") for line in lines))
+
+if __name__ == "__main__":
+    unittest.main()
