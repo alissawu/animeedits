@@ -1,9 +1,10 @@
-"""Place each indexed shot in the story: story.py OUT_DIR [--synopsis FILE] [--context SHOW.md].
+"""Place each indexed shot in the story: story.py OUT_DIR [--synopsis FILE] [--context CAST.md].
 
 Reads OUT_DIR/shots.json from index.py and a synopsis of the video's plot (OUT_DIR/synopsis.md unless --synopsis
 says otherwise). Claude reads them as text, with no images, and splits the shots into scenes. Each scene has a shot
 range, a label for what happens, who is in it and a confidence. It also flags caption names that the scene's lines
-or the synopsis contradict. Captions are never rewritten. Writes OUT_DIR/story.json. See docs/pipeline.md.
+or the synopsis contradict, and lists every shot's names with those flags applied, beside the caption's own.
+shots.json is never rewritten. Writes OUT_DIR/story.json. See docs/pipeline.md.
 """
 from __future__ import annotations
 
@@ -12,15 +13,17 @@ from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 import shutil
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 try:
     from detect import positive_int
-    from index import POSSIBLY, IndexedShot, Line, cached, claude_cli, read_context, save, sha256, with_retries
+    from index import (POSSIBLY, Character, IndexedShot, Line, cached, canonical_name, cast_names, claude_cli,
+                       merge_characters, name_key, read_context, save, sha256, with_retries)
 except ImportError:  # imported as scene_frames.story
     from .detect import positive_int  # type: ignore[import-not-found,no-redef]
-    from .index import (POSSIBLY, IndexedShot, Line, cached,  # type: ignore[import-not-found,no-redef]
-                        claude_cli, read_context, save, sha256, with_retries)
+    from .index import (POSSIBLY, Character, IndexedShot, Line,  # type: ignore[import-not-found,no-redef]
+                        cached, canonical_name, cast_names, claude_cli, merge_characters, name_key, read_context,
+                        save, sha256, with_retries)
 
 STORY_VERSION = 1
 STORY_MODEL = "claude-opus-5-5"
@@ -114,6 +117,16 @@ class Scene(TypedDict):
     characters: list[str]
     confidence: Confidence
     flags: list[Flag]
+
+
+class ShotNames(TypedDict):
+    id: int
+    characters: list[Character]  # the caption's names with the scene's flags applied
+    caption_characters: NotRequired[list[Character]]  # shots.json's names, when a flag changed them
+
+
+class StoryScene(Scene):
+    shots: list[ShotNames]
 
 
 def line_source(shots: Sequence[IndexedShot]) -> LineSource | None:
@@ -251,6 +264,63 @@ def parse_scenes(text: str, group: Sequence[IndexedShot]) -> list[Scene]:
     return scenes
 
 
+def corrected_names(scene: Scene, members: Sequence[IndexedShot], names: Sequence[str]) -> list[ShotNames]:
+    """Each shot's names with the scene's flags applied, in the cast notes' spelling.
+
+    A flag replaces the name on its shot with who the person likely is, or drops it when nobody can tell. When the
+    scene's characters leave the flagged name out, the name is wrong all through the scene, so every other shot that
+    gives it changes too: to the flags' likely person when they agree on one, or dropped when they don't. When the
+    scene's characters include the name, that person really is in the scene and only the flagged shots change.
+    Replacements are marked unsure, since the story pass reads lines and the synopsis but never sees the picture."""
+    def likely(flag: Flag) -> str | None:
+        return canonical_name(flag["likely"], names) if flag["likely"] else None
+
+    present = {name_key(canonical_name(c, names)) for c in scene["characters"]}
+    own = {(f["shot"], f["name"]): likely(f) for f in scene["flags"]}
+    candidates: dict[str, set[str | None]] = {}
+    for f in scene["flags"]:
+        candidates.setdefault(f["name"], set()).add(likely(f))
+    spread = {name: next(iter(who)) if len(who) == 1 else None
+              for name, who in candidates.items() if name_key(canonical_name(name, names)) not in present}
+    result: list[ShotNames] = []
+    for shot in members:
+        changed = False
+        fixed: list[Character] = []
+        for c in shot["characters"]:
+            if (shot["id"], c["name"]) in own:
+                replacement = own[shot["id"], c["name"]]
+            elif c["name"] in spread:
+                replacement = spread[c["name"]]
+            else:
+                fixed.append(c)
+                continue
+            changed = True
+            if replacement is not None:
+                fixed.append(Character(name=replacement, certain=False))
+        entry = ShotNames(id=shot["id"], characters=merge_characters(fixed))
+        if changed:
+            entry["caption_characters"] = shot["characters"]
+        result.append(entry)
+    return result
+
+
+def tell_story(scenes: Sequence[Scene], shots: Sequence[IndexedShot], names: Sequence[str]) -> list[StoryScene]:
+    """The scenes as story.json has them: names in the cast notes' spelling, and each shot's corrected names."""
+    position = {s["id"]: k for k, s in enumerate(shots)}
+    story: list[StoryScene] = []
+    for scene in scenes:
+        members = shots[position[scene["first_shot"]]:position[scene["last_shot"]] + 1]
+        story.append(StoryScene(
+            id=scene["id"], first_shot=scene["first_shot"], last_shot=scene["last_shot"], start=scene["start"],
+            end=scene["end"], label=scene["label"],
+            characters=list(dict.fromkeys(canonical_name(c, names) for c in scene["characters"])),
+            confidence=scene["confidence"],
+            flags=[Flag(shot=f["shot"], name=f["name"], reason=f["reason"],
+                        likely=canonical_name(f["likely"], names) if f["likely"] else None) for f in scene["flags"]],
+            shots=corrected_names(scene, members, names)))
+    return story
+
+
 def place_shots(shots: Sequence[IndexedShot], context: str, lines: Mapping[int, list[str]], model: str,
                 chunk_size: int, cache: Path) -> list[Scene]:
     """Scenes for every shot, asking for chunk_size shots at a time.
@@ -337,9 +407,12 @@ def main() -> None:
                              a.model, a.chunk_size, cache)
     except (ValueError, RuntimeError) as e:
         raise SystemExit(f"{e}. Finished chunks are cached, so rerunning resumes.") from None
-    save(out / "story.json", scenes)
-    flags = sum(len(s["flags"]) for s in scenes)
-    print(f"{len(scenes)} scenes, {flags} flagged caption names -> {out / 'story.json'}")
+    story = tell_story(scenes, shots, cast_names(cast_notes) if cast_notes else ())
+    save(out / "story.json", story)
+    flags = sum(len(s["flags"]) for s in story)
+    corrected = sum("caption_characters" in shot for s in story for shot in s["shots"])
+    print(f"{len(story)} scenes, {flags} flagged caption names, {corrected} shots with corrected names "
+          f"-> {out / 'story.json'}")
 
 
 if __name__ == "__main__":

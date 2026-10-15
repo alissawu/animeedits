@@ -19,7 +19,7 @@ How you research, plan and build is up to you. One thing is not: **watch your re
 
 Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (where the song meets the story, the stretch of song, the moment the edit hinges on) and wait for a pick. Otherwise choose the strongest and build it.
 
-Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. Research on a show's cast can double as `index.py --context`; the format is in [docs/pipeline.md](docs/pipeline.md#captions).
+Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. The show's cast notes and episode synopses are already in `shows/<show>/`; your research is what's specific to this edit, in `out/<edit-name>/`.
 
 Good places to look. These are starting points, not a checklist:
 - **Canon:**
@@ -44,8 +44,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 
 | Need | Command | Docs |
 |---|---|---|
-| Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO out/index/NAME ...`, full command below | [pipeline.md](docs/pipeline.md) |
-| Place each shot in the story: scenes, what happens, who's there, caption names the scene contradicts | `python scene_frames/story.py out/index/NAME --context out/index/SHOW.md` | [pipeline.md](docs/pipeline.md#story) |
+| Index a show's videos: shots, stills, motion, flashes, look, captions, dialogue, then scenes and corrected names | `python scene_frames/show.py prepare SHOW`, research, then `finish SHOW` | [indexing.md](docs/indexing.md) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
 | Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
 
@@ -53,16 +52,13 @@ Things you can't see from the code:
 - **Sung lyrics:** Whisper gets the timing right but often the words wrong. Take the words from the published lyrics and the timing from Whisper. [LRCLIB](https://lrclib.net) has time-synced lyrics; Genius pages are often incomplete.
 - **Dialogue buried under music in footage:** before transcribing, `index.py` skips stretches it thinks have no speech (voice activity detection, or VAD). That also drops lines mixed under a song or loud score. If a scene's dialogue is missing from `shots.json`, rerun with `--no-vad`. `analyze_edit.py` already runs without VAD.
 - **Vertical crops:** a 9:16 crop of 16:9 footage keeps only the middle third. Subjects at the edges disappear, like two hands at either side of the frame. Set each clip's `crop` focus and check it on the proof sheet.
-- **Indexes are shared between edits.** Index each film or episode into `out/index/NAME/`, where NAME is the video's file name without its extension, with exactly this command:
-  `python scene_frames/index.py VIDEO out/index/NAME --sample 5 --proxy 480 --faces anime --lang LANG --context out/index/SHOW.md`
-  LANG is the audio's language (`en`, `ja`). Add `--subs FILE` when index.py lists a subtitle file beside the video. Every stage is cached, so the command finishes a partial index, and on a finished one it only rebuilds the contact sheets, a minute or two. Other options redo detection for the whole video.
-- **Cast notes are shared too.** `out/index/SHOW.md` (e.g. `chainsaw_man.md`) holds one show's cast notes for every video of it. If captions keep misnaming someone, fix the notes, but every video of that show gets re-captioned.
-- **Captions say what a still shows; `story.json` says where it falls in the plot.** After indexing, write the episode's or film's plot in order to `out/index/NAME/synopsis.md` (a Fandom wiki episode summary works well), then run `story.py`. It's cached and shared like the index. Before trusting a caption's character name, check `story.json` for a flag on that shot.
+- **Indexes are shared between edits.** Each video's index is in `out/index/NAME/` (NAME is the file name without its extension), built from the show's research in `shows/<show>/` by `show.py`. If a video you need isn't indexed, or its captions keep misnaming someone, follow [docs/indexing.md](docs/indexing.md) rather than running `index.py` with your own options.
+- **Use `story.json`'s names, not the captions'.** `shots.json` says what each still shows. `story.json` places each shot in its scene and lists every shot's names corrected against the dialogue and the plot (`shots[].characters`), with the caption's originals beside any it changed.
 - **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in, and so does `story.py`.
 
 ## Files
 
-- `media/`: songs and source video. `out/index/`: shared indexes and cast notes. `out/<edit-name>/`: everything else a run produces (research notes, song map, EDL, renders). `media/` and `out/` are gitignored, so they exist only in the main checkout: make edits there, not in a git worktree. Never commit media.
+- `media/`: songs and source video. `shows/`: each show's research (manifest, cast notes, synopses), committed. `out/index/`: the shared indexes built from it. `out/<edit-name>/`: everything else a run produces (research notes, song map, EDL, renders). `media/` and `out/` are gitignored, so they exist only in the main checkout: make edits there, not in a git worktree. Never commit media.
 - `breakdowns/`: dissected reference edits, the taste reference.
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`

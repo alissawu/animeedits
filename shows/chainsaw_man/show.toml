@@ -1,0 +1,12 @@
+# Chainsaw Man: the research every edit of this show shares. docs/indexing.md explains each field.
+# Video and subtitle paths start in media/; cast notes and synopses in this folder.
+title = "Chainsaw Man"
+
+[[groups]]
+name = "Reze Arc"
+cast = "cast/reze_arc.md"
+
+# English dub. The .en.auto.srt beside it is a machine transcript, no better than Whisper's, so it isn't used.
+[[groups.videos]]
+video = "chainsaw_man/Chainsaw.Man.Movie.Reze.Arc.English.mp4"
+synopsis = "synopses/reze_arc.md"

@@ -113,6 +113,63 @@ class ParseScenesTests(unittest.TestCase):
                 story.parse_scenes(reply(*scenes), self.group)
 
 
+def named(*names: str) -> list[dict[str, Any]]:
+    """Characters: a name ending in ? is unsure."""
+    return [{"name": n.rstrip("?"), "certain": not n.endswith("?")} for n in names]
+
+
+class CorrectedNamesTests(unittest.TestCase):
+    NAMES = ["Mira Sato", "Rin Aoyama", "Tomo"]
+
+    def scene(self, characters: list[str], *flags: tuple[int, str, str | None]) -> dict[str, Any]:
+        return {"id": 1, "first_shot": 1, "last_shot": 4, "start": 0.0, "end": 8.0, "label": "x",
+                "characters": characters, "confidence": "high",
+                "flags": [{"shot": shot, "name": name, "likely": likely, "reason": "r"} for shot, name, likely in flags]}
+
+    def shots(self) -> list[dict[str, Any]]:
+        return [make_shot(1, characters=named("Mira Sato", "Tomo?")), make_shot(2, characters=named("Tomo")),
+                make_shot(3, characters=named("Tomo", "Rin Aoyama")), make_shot(4, characters=named("Mira Sato"))]
+
+    def corrected(self, scene: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+        return {s["id"]: s["characters"] for s in story.corrected_names(scene, self.shots(), self.NAMES)}
+
+    def test_a_name_the_scene_leaves_out_is_wrong_on_every_shot(self) -> None:
+        result = story.corrected_names(self.scene(["Mira", "Rin"], (1, "Tomo", "rin")), self.shots(), self.NAMES)
+        self.assertEqual(result, [
+            {"id": 1, "characters": named("Mira Sato", "Rin Aoyama?"), "caption_characters": named("Mira Sato", "Tomo?")},
+            {"id": 2, "characters": named("Rin Aoyama?"), "caption_characters": named("Tomo")},
+            {"id": 3, "characters": named("Rin Aoyama"), "caption_characters": named("Tomo", "Rin Aoyama")},
+            {"id": 4, "characters": named("Mira Sato")},
+        ])
+
+    def test_a_name_the_scene_includes_changes_only_where_flagged(self) -> None:
+        corrected = self.corrected(self.scene(["Mira Sato", "Tomo"], (1, "Tomo", "Rin Aoyama")))
+        self.assertEqual(corrected, {1: named("Mira Sato", "Rin Aoyama?"), 2: named("Tomo"),
+                                     3: named("Tomo", "Rin Aoyama"), 4: named("Mira Sato")})
+
+    def test_flags_that_disagree_drop_the_name_elsewhere(self) -> None:
+        corrected = self.corrected(self.scene(["Mira Sato"], (1, "Tomo", "Rin Aoyama"), (2, "Tomo", "Mira")))
+        self.assertEqual(corrected, {1: named("Mira Sato", "Rin Aoyama?"), 2: named("Mira Sato?"),
+                                     3: named("Rin Aoyama"), 4: named("Mira Sato")})
+
+    def test_nobody_likely(self) -> None:
+        corrected = self.corrected(self.scene([], (4, "Mira Sato", None)))
+        self.assertEqual(corrected[1], named("Tomo?"))
+        self.assertEqual(corrected[4], [])
+
+    def test_no_flags(self) -> None:
+        result = story.corrected_names(self.scene(["Mira Sato"]), self.shots(), self.NAMES)
+        self.assertEqual([s["characters"] for s in result], [s["characters"] for s in self.shots()])
+        self.assertFalse(any("caption_characters" in s for s in result))
+
+    def test_tell_story_spells_names_as_the_notes_do(self) -> None:
+        [scene] = story.tell_story([self.scene(["Mira", "Rin", "Mira Sato"], (2, "Tomo", "rin"))], self.shots(),
+                                   self.NAMES)
+        self.assertEqual(scene["characters"], ["Mira Sato", "Rin Aoyama"])
+        self.assertEqual(scene["flags"], [{"shot": 2, "name": "Tomo", "likely": "Rin Aoyama", "reason": "r"}])
+        self.assertEqual([s["id"] for s in scene["shots"]], [1, 2, 3, 4])
+
+
 class RequestTests(unittest.TestCase):
     def test_lines_are_read_once_and_subtitles_win(self) -> None:
         shots = make_shots(3)
@@ -198,7 +255,11 @@ class StoryEndToEndTests(unittest.TestCase):
         self.assertEqual(scenes[0], {
             "id": 1, "first_shot": 1, "last_shot": 2, "start": 0.0, "end": 4.0, "label": "Scene from shot 1",
             "characters": ["Mira"], "confidence": "medium",
-            "flags": [{"shot": 1, "name": "Tomo", "likely": "Rin", "reason": "Mira calls her Rin."}]})
+            "flags": [{"shot": 1, "name": "Tomo", "likely": "Rin", "reason": "Mira calls her Rin."}],
+            "shots": [{"id": 1, "characters": [{"name": "Mira", "certain": True}, {"name": "Rin", "certain": False}],
+                       "caption_characters": [{"name": "Mira", "certain": True}, {"name": "Tomo", "certain": False}]},
+                      {"id": 2, "characters": []}]})
+        self.assertEqual([[shot["id"] for shot in s["shots"]] for s in scenes], [[1, 2], [3, 4], [5, 6], [7]])
         calls = self.calls()
         # Shots 1-4 (scene 3-4 dropped), then 3-6 (scene 5-6 dropped), then 5-7 to the end.
         self.assertEqual([[int(i) for i in story_ids(c["text"])] for c in calls], [[1, 2, 3, 4], [3, 4, 5, 6], [5, 6, 7]])

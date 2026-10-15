@@ -2,7 +2,9 @@
 
 Detect shots with `detect.py VIDEO OUT_DIR`: per shot, a keyframe, first and last frames, a motion curve with its peaks, flashes and look stats. Build the full index for an edit director with `index.py VIDEO OUT_DIR`, which adds captions, word-timed dialogue and optional subtitles, from the video or a subtitle file, in `shots.json`. By default, captions come from `claude -p` on your Claude Code sign-in, with no API key. `--captioner api` uses the Claude API and `--captioner agent` hands sheets to Claude Code agents.
 
-Place every indexed shot in the story with `story.py OUT_DIR`. Claude reads a synopsis with the index's captions and lines, as text only, and writes `story.json`: scenes with a label, characters, a confidence, and flags on caption names the scene contradicts.
+Index a whole show from its manifest in `shows/<show>/` with `show.py prepare SHOW`, then `show.py finish SHOW` once its cast notes and synopses are written; see [indexing a show](../docs/indexing.md). It runs index.py and story.py on every video a few at a time, with the options every edit shares, and reports the names the captions give.
+
+Place every indexed shot in the story with `story.py OUT_DIR`. Claude reads a synopsis with the index's captions and lines, as text only, and writes `story.json`: scenes with a label, characters, a confidence, flags on caption names the scene contradicts, and every shot's names with those flags applied.
 
 Measure a short reference edit's cuts, flashes, beats and word timings, or map a song file's beats, drops, sections and word timings, with `analyze_edit.py MEDIA OUT_DIR`; see [edit analysis](../docs/edit_analysis.md).
 

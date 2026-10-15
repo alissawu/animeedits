@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 import tempfile
@@ -177,6 +178,93 @@ class CaptionTests(unittest.TestCase):
                 index.parse_captions(json.dumps(bad), {1})
 
 
+class CastNameTests(unittest.TestCase):
+    CAST = ("Setting: 2006.\n\n### Satoru Gojo\n- Hair: white\n### Suguru Geto\n- Hair: bun\n"
+            "### Kenjaku (in Suguru Geto's body)\n- Hair: long\n### Toji Fushiguro\n### Megumi Fushiguro\n"
+            "### Maki Zen'in\n### Tamamo-no-Mae (Geto's curse)\n### Satoru Gojo\n")
+
+    def test_cast_names(self) -> None:
+        self.assertEqual(index.cast_names(self.CAST), ["Satoru Gojo", "Suguru Geto", "Kenjaku", "Toji Fushiguro",
+                                                       "Megumi Fushiguro", "Maki Zen'in", "Tamamo-no-Mae"])
+        self.assertEqual(index.cast_names("- Box: a white square"), [])
+
+    def test_canonical_name(self) -> None:
+        names = index.cast_names(self.CAST)
+        for given, expected in {
+            "Satoru Gojo": "Satoru Gojo", "satoru  GOJO": "Satoru Gojo", "Gojo": "Satoru Gojo",
+            "Gojo Satoru": "Satoru Gojo", "Satoru": "Satoru Gojo", "Geto": "Suguru Geto", "Kenjaku": "Kenjaku",
+            "Maki Zenin": "Maki Zen'in", "Zenin": "Maki Zen'in", "Tamamo no Mae": "Tamamo-no-Mae",
+            "Gojō": "Satoru Gojo", "Gojo (child)": "Satoru Gojo", "Rika (cursed form)": "Rika (cursed form)",
+            "Fushiguro": "Fushiguro", "Yuji Itadori": "Yuji Itadori", "Young Gojo": "Young Gojo", "": "",
+        }.items():
+            with self.subTest(given):
+                self.assertEqual(index.canonical_name(given, names), expected)
+        self.assertEqual(index.canonical_name("Gojo", []), "Gojo")
+
+    def test_canonical_characters_merge(self) -> None:
+        names = index.cast_names(self.CAST)
+        self.assertEqual(index.canonical_characters(
+            [{"name": "Gojo", "certain": False}, {"name": "Satoru Gojo", "certain": True},
+             {"name": "Geto", "certain": False}, {"name": "Suguru Geto", "certain": False}], names),
+            [{"name": "Satoru Gojo", "certain": True}, {"name": "Suguru Geto", "certain": False}])
+
+
+def lines(*starts: float) -> list[dict[str, Any]]:
+    return [{"start": t, "end": t + 1.0, "text": "x"} for t in starts]
+
+
+class LanguageTests(unittest.TestCase):
+    def stream(self, language: str | None) -> dict[str, Any]:
+        return {"index": 0, "codec": "aac", "language": language, "title": None, "default": True}
+
+    def test_tag_language(self) -> None:
+        for tag, code in {"jpn": "ja", "eng": "en", "ger": "de", "deu": "de", "JA": "ja", " en ": "en",
+                          "und": None, "": None, None: None, "xx": None, "qaa": None}.items():
+            with self.subTest(tag):
+                self.assertEqual(index.tag_language(tag), code)
+
+    def test_dialogue_language(self) -> None:
+        self.assertEqual(index.dialogue_language(None, self.stream("jpn")), ("ja", "the audio track's jpn tag"))
+        self.assertEqual(index.dialogue_language("en", self.stream("jpn")), ("en", "--lang"))
+        self.assertEqual(index.dialogue_language("auto", self.stream("jpn")), (None, "--lang auto"))
+        lang, source = index.dialogue_language(None, self.stream("und"))
+        self.assertIsNone(lang)
+        self.assertIn("auto-detect", source)
+
+
+class SubtitleTimingTests(unittest.TestCase):
+    # Irregular gaps of 1.5-4.5 s, like dialogue, with lines Whisper missed and invented.
+    SPEECH = [round(3.0 * k + 1.5 * math.sin(k * 1.7), 2) for k in range(1, 200)]
+
+    def test_in_sync(self) -> None:
+        cues = [t + 0.1 for k, t in enumerate(self.SPEECH) if k % 5]  # every fifth line has no cue
+        timing = index.subtitle_offset(lines(*self.SPEECH), lines(*cues))
+        assert timing is not None
+        self.assertAlmostEqual(timing["offset"], 0.1, delta=0.05)
+        self.assertGreater(timing["matched"], 0.9 * timing["cues"])
+        self.assertTrue(index.subtitle_timing_note(timing).startswith("subtitle timing matches"))
+
+    def test_offset_either_way(self) -> None:
+        for shift in (2.5, -1.6, 75.0):
+            with self.subTest(shift):
+                timing = index.subtitle_offset(lines(*self.SPEECH), lines(*(t + shift for t in self.SPEECH)))
+                assert timing is not None
+                self.assertAlmostEqual(timing["offset"], shift, delta=0.05)
+                note = index.subtitle_timing_note(timing)
+                self.assertTrue(note.startswith("warning: the subtitles start"), note)
+                self.assertIn("late" if shift > 0 else "early", note)
+                self.assertIn(f"-itsoffset {-shift:.2f}", note)
+
+    def test_another_video(self) -> None:
+        other = [round(2.7 * k + 1.9 * math.cos(k * 2.9), 2) for k in range(1, 200)]
+        note = index.subtitle_timing_note(index.subtitle_offset(lines(*self.SPEECH), lines(*other)))
+        self.assertTrue(note.startswith("warning: the subtitles don't line up"), note)
+
+    def test_too_few_lines(self) -> None:
+        self.assertIsNone(index.subtitle_offset(lines(*self.SPEECH[:5]), lines(*self.SPEECH)))
+        self.assertTrue(index.subtitle_timing_note(None).startswith("subtitle timing not checked"))
+
+
 class DialogueTests(unittest.TestCase):
     def test_parse_srt(self) -> None:
         srt = ("1\r\n00:00:03,000 --> 00:00:04,000\r\nTwo\r\nlines\\Nhere\r\n\r\n"
@@ -199,6 +287,10 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(shots[1]["keyframe"], {"time": 1.5, "file": "2.jpg"})
         self.assertNotIn("subtitles", shots[0])
         self.assertNotIn("dialogue", index.build_shots(rows, captions, None, [])[0])
+        captions["1"]["characters"] = [{"name": "Mira", "certain": False}, {"name": "Mira Sato", "certain": True}]
+        named = index.build_shots(rows, captions, None, None, ["Mira Sato", "Tomo"])
+        self.assertEqual(named[0]["characters"], [{"name": "Mira Sato", "certain": True}],
+                         "names take the cast notes' spelling")
 
     def test_subtitle_file_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,10 +12,12 @@ Writes `scenes.json` and `scene_0004_005.90s.jpg`-style stills. Omit `--sample` 
 
 ## Index
 ```sh
-python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
+python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --faces anime --context CAST.md
 ```
 
-Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, in the background while shots are detected and captioned, and can add text subtitles from the video or a subtitle file. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
+A show's videos are indexed with `show.py`, which runs this with the options every edit shares; see [indexing.md](indexing.md). This section is what index.py does.
+
+Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, in the background while shots are detected and captioned, and can add text subtitles from the video or a subtitle file. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use. `--no-captions` stops before captioning: it detects, saves the stills, draws the sheets, transcribes and reads subtitles, with no Claude and no `shots.json`, so cast notes can be checked against the sheets before anything is captioned.
 
 ### Captioners
 
@@ -29,11 +31,11 @@ Builds numbered contact sheets of keyframes and captions them with Claude in par
 
 ### Captions
 
-Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. Nobody is named, even as "possibly", when what's visible contradicts how that character looks, such as a different hair color. `characters` lists everyone a caption names by bare name, with `certain: false` for the "possibly"s, and leaves out the unidentified. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is a separate text-only pass over shot order and dialogue, [Story](#story).
+Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. Nobody is named, even as "possibly", when what's visible contradicts how that character looks, such as a different hair color. `characters` lists everyone a caption names by bare name, with `certain: false` for the "possibly"s, and leaves out the unidentified. Names are written in the cast notes' spelling: a name that matches a `### ` heading ignoring case, accents and punctuation, or that is part of exactly one heading ("Gojo", "Gojo Satoru"), becomes that heading ("Satoru Gojo"). A trailing parenthetical in a heading is a note and not part of the name. This happens when `shots.json` is built, so cached captions get it too. Names the notes don't have are kept as the caption gives them. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is a separate text-only pass over shot order and dialogue, [Story](#story).
 
 Nothing in the prompt is specific to a show. Two inputs tell the model what it's looking at:
 
-- `--context FILE`: the usual input, a markdown file from a research step for the title. Only its `## Cast` section goes into the prompt, so sheets stay cheap, and the model matches people against the visual identifiers there.
+- `--context FILE`: the usual input, the cast notes for the video's film, season or arc, from `shows/<show>/cast/`. Only its `## Cast` section goes into the prompt, so sheets stay cheap, and the model matches people against the visual identifiers there.
 - `--title TEXT`: the light option when there's no context file, e.g. `--title "Show Name, season 2"`. It defaults to the context file's `# ` heading.
 
 Both are in the caption cache signature (the cast section by hash), so changing either re-captions. Editing other sections of the context file doesn't. The system prompt is cached, which only matters once the cast makes it longer than the model's minimum cacheable length.
@@ -41,24 +43,23 @@ Both are in the caption cache signature (the cast section by hash), so changing 
 The context file looks like this:
 
 ```markdown
-# Show title
+# Show title, season or arc (studio, year)
 
 ## Cast
+
+Lighting: ...
+Setting: ...
+
 ### Character name
-- Hair: color, length, style
+- Hair: shape, length, color
 - Eyes: color, anything distinctive
 - Outfit: what they usually wear, and alternates
 - Accessories: anything signature, like a choker, earrings, glasses or a scar
-- Other forms: transformations, monster or armored forms, masks
-
-## Scenes
-...
-
-## Moments
-...
+- Other forms: transformations, monster or armored forms, masks, other ages
+- Tell apart from: each look-alike, with the one visible difference
 ```
 
-Each cast entry needs identifiers that survive a thumbnail: hair color and style, eye color, outfit, signature accessories, and alternate or monster forms. `## Scenes` and `## Moments` are optional and not used for captions. A file without a non-empty `## Cast` section is rejected.
+How to research and check one is the [cast-notes recipe](indexing.md#recipe-cast-notes). Other sections are ignored. A file without a non-empty `## Cast` section is rejected.
 
 `--sheet-size N` sets shots per sheet (default 12). Sheets are three 512 px tiles wide, so fewer shots per sheet means larger tiles after the API's downscaling. The model matters more than tile size: Haiku 4.5 misreads dark night tiles even at 6 shots per sheet, where Haiku 5.5 reads them at 12.
 
@@ -82,11 +83,13 @@ Reply filenames include a hash of the sheet's cache signature, so a reply writte
 
 The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks another. Films often carry several tracks, and reference edits often use the English dub. Index prints the audio streams with language and title tags, and lists any text subtitle streams it finds. `--subs-stream N` adds that subtitle stream (`0:s:N`: SRT, ASS/SSA, mov_text or WebVTT) to each shot as `subtitles`. Image subtitles (PGS, VobSub) can't be read.
 
-`--subs FILE` adds a subtitle file instead: SRT, ASS/SSA or WebVTT, in UTF-8. Index lists subtitle files named after the video that sit beside it, such as `EP01.srt` or `EP01.en.ass` next to `EP01.mp4`. A file made for a different release of the video can be offset by a recap, an intro or a different cut, so check a few cues against `dialogue` before relying on its times. `--no-transcribe` skips Whisper, for subtitles instead of a transcript or for a video without audio.
+`--subs FILE` adds a subtitle file instead: SRT, ASS/SSA or WebVTT, in UTF-8. Index lists subtitle files named after the video that sit beside it, such as `EP01.srt` or `EP01.en.ass` next to `EP01.mp4`. A file made for a different release of the video can be offset by a recap, an intro or a different cut. So when there are both subtitles and a transcript, index checks their timing against each other, by start times alone since the two are often in different languages. It finds the shift, up to 2 minutes either way, at which the most cue starts land within 0.5 s of a Whisper line's start, and takes the median gap over those cues. It prints a line starting `warning: ` when that median is over 1 s, with the `ffmpeg -itsoffset` command that shifts the file back, or when fewer than half the cues match at any shift, which usually means the file is for another video. In-sync subtitles match about 65–85% of their cues; at a wrong shift, about a third match by chance. `--no-transcribe` skips Whisper, for subtitles instead of a transcript or for a video without audio.
 
 Whisper runs with voice-activity detection by default, which keeps it from inventing lines over music and silence. On edits, where dialogue is mixed under a song, it can drop every line: on the White Light reference edit it removed both. Use `--no-vad` there.
 
-Defaults are `--captioner claude`, `--caption-model claude-haiku-5-5`, `--workers 10` (sheets captioned at once), `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
+Whisper transcribes in the language of the audio track's tag (`jpn` gives `ja`, `eng` gives `en`), and detects the language itself when the tag is missing, undetermined or unusual. `--lang CODE` overrides the tag, and `--lang auto` asks for detection anyway. Index prints which it used.
+
+Defaults are `--captioner claude`, `--caption-model claude-haiku-5-5`, `--workers 10` (sheets captioned at once) and `--whisper-model small`. Use `--whisper-model small.en` for an English-only model.
 
 ### shots.json
 
@@ -96,7 +99,7 @@ An array of shots. Times are seconds relative to the input video, and still path
 |---|---|
 | `id`, `start`, `end` | Shot number and time range (`end` exclusive) |
 | `keyframe`, `first_frame`, `last_frame` | `{time, file}` stills: the best frame, and how the shot starts and ends |
-| `caption`, `characters` | From the captioner. `characters` is `[{name, certain}]` |
+| `caption`, `characters` | From the captioner. `characters` is `[{name, certain}]`, names in the cast notes' spelling |
 | `motion` | `{fps, curve, peaks, mean, max}`: per-frame flow speed in frame widths/s and the times of motion bursts |
 | `flashes` | `[{time, frames}]` bright flashes |
 | `look` | `{luma, hue, saturation, palette}` for matching color grades |
@@ -107,20 +110,20 @@ A line spanning a cut appears in both shots; its word times show which words fal
 
 ### Caching
 
-Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. A subtitle file is read again on every run. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
+Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Cast notes and titles are keyed by their text, not their file path, so moving a notes file re-captions nothing. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. A subtitle file is read again on every run. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
 
 ## Story
 ```sh
-python scene_frames/story.py OUT_DIR --context context.md
+python scene_frames/story.py OUT_DIR --context CAST.md --synopsis SYNOPSIS.md
 ```
 
-Places every indexed shot in the story. It reads `OUT_DIR/shots.json` and a synopsis of the video, `OUT_DIR/synopsis.md` unless `--synopsis FILE` names another. Claude reads them as text, with no images, and splits the shots into scenes. Each scene gets a label for what happens, who is in it and a confidence. Caption names that the scene contradicts are flagged. The result goes to `OUT_DIR/story.json`. `shots.json` is never changed: captions stay a record of what each still shows, and the story sits beside them.
+Places every indexed shot in the story. `show.py finish` runs it for each of a show's videos. It reads `OUT_DIR/shots.json` and a synopsis of the video, `OUT_DIR/synopsis.md` unless `--synopsis FILE` names another. Claude reads them as text, with no images, and splits the shots into scenes. Each scene gets a label for what happens, who is in it and a confidence. Caption names that the scene contradicts are flagged, and every shot's names are listed again with the flags applied. The result goes to `OUT_DIR/story.json`. `shots.json` is never changed: captions stay a record of what each still shows, and the story sits beside them.
 
 Captions leave the story out on purpose. Given a synopsis while looking at a thumbnail, a captioner labels scenes from the thumbnail, confidently and often wrongly. This pass sees what a captioner can't: every shot in order, the lines over them and the synopsis. It trusts the lines most (who speaks, who is addressed by name), then the synopsis, then the captions.
 
 Inputs:
 
-- The synopsis: the episode's or film's plot in order, as plain text or markdown, from the research step. A Fandom wiki's episode summary works well. When the page won't load, the wiki's MediaWiki API usually still answers through curl: `https://WIKI.fandom.com/api.php?action=parse&page=PAGE&prop=wikitext&format=json`. Naming the opening and ending songs helps. Keep it beside the index, since every edit of that video shares it.
+- The synopsis: the episode's or film's plot in order, as plain text or markdown, from `shows/<show>/synopses/`; the [synopsis recipe](indexing.md#recipe-synopsis) is how to write one. Without `--synopsis`, story.py reads `OUT_DIR/synopsis.md`.
 - `--context FILE`: the cast notes given to `index.py --context`. Scenes name characters as the notes do, which matches the captions. The visual identifiers in the notes help the model say who a misnamed person really is. The notes' `# ` heading is the default `--title`.
 - Lines: each shot's subtitles when the index has them, otherwise its Whisper dialogue. A line spanning cuts is given once, under the shot it begins in.
 
@@ -135,8 +138,11 @@ Inputs:
 | `characters` | Everyone who appears or speaks, by the cast notes' names |
 | `confidence` | `high`: lines or an unmistakable event from the synopsis confirm it. `medium`: it fits the synopsis and captions, but nothing confirms it. `low`: a guess |
 | `flags` | `[{shot, name, likely, reason}]`: a name the shot's caption gives that the scene contradicts, who the person likely is (`null` when unclear), and the line or synopsis point that says so. `name` is spelled as in that shot's `characters` |
+| `shots` | `[{id, characters, caption_characters}]` for every shot in the scene: its names with the scene's flags applied, and, only when they changed, the caption's own names from `shots.json` |
 
-Use it to find a moment by what happens rather than by how a still looks, and to leave out credits, recaps and previews. Before trusting a caption's name, check its shot for a flag. A name is flagged only when something contradicts it, not just because the caption was unsure.
+Use it to find a moment by what happens rather than by how a still looks, and to leave out credits, recaps and previews. Use `shots[].characters` for who is in a shot. A name is flagged only when something contradicts it, not just because the caption was unsure.
+
+The flags are applied like this. A flag replaces the name on its shot with the `likely` person, or drops it when `likely` is `null`. The model often flags a wrong name on one shot and misses the same name on the shots around it, so when a scene's `characters` leave the flagged name out, every shot in the scene that gives it changes too: to the flags' `likely` person when they agree, or dropped when they don't. When the scene's `characters` include the name, that person is really in the scene (the model flagged Reze once in the pool scene, where every other "Reze" is right), so only the flagged shots change. A replacement is always unsure (`certain: false`), since the story pass reads lines and the synopsis but never sees the picture. Applying flags needs no model call, so it reruns on cached scenes.
 
 A scene is a continuous stretch of story in one place and time. One that runs past about 40 shots is split where the action turns, except for credits. Boundaries at changes of place or time and at credits are stable from run to run. Where a long scene splits into beats can move by a shot or a few.
 

@@ -427,6 +427,34 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "m
         run()
         self.assertEqual(json.loads((out / "shots.json").read_text()), shots, "a rerun is served from the caches")
 
+    def test_index_prepare_without_captions(self) -> None:
+        """--no-captions: stills and sheets but no Claude and no shots.json; captioning later reuses the detection."""
+        out = self.root / "prepare"
+
+        def no_claude(*_: Any, **__: Any) -> None:
+            raise AssertionError("--no-captions must not caption")
+
+        def run(*args: str) -> str:
+            stdout = io.StringIO()
+            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", *args]
+            with mock.patch.object(sys, "argv", argv), mock.patch.dict(sys.modules, {"anthropic": None}), \
+                    mock.patch.object(index, "run_captioner", no_claude), contextlib.redirect_stdout(stdout):
+                index.main()
+            return stdout.getvalue()
+
+        printed = run("--no-captions", "--subs", str(self.root / "subs.srt"))
+        self.assertIn("prepared 3 shots on 2 contact sheets", printed.splitlines()[-1])
+        self.assertEqual(sorted(p.name for p in (out / "sheets").iterdir()), ["sheet_0001.jpg", "sheet_0002.jpg"])
+        self.assertFalse((out / "shots.json").exists())
+        self.assertFalse((out / index.CAPTION_JOBS).exists())
+        self.assertEqual(sorted(p.name for p in (out / "cache").iterdir()), ["detection.json"])
+        self.assertEqual(len(index.detected_shots(out)), 3)
+        detected = (out / "cache" / "detection.json").stat().st_mtime_ns
+        self.assertIn("2 sheets need captions", run("--captioner", "agent"))
+        self.assertEqual((out / "cache" / "detection.json").stat().st_mtime_ns, detected, "detection is reused")
+        with self.assertRaises(ValueError):
+            index.detected_shots(self.root / "nothing")
+
     def test_index_needs_audio_to_transcribe(self) -> None:
         argv = ["index.py", str(self.mp4), str(self.root / "no-audio")]
         with mock.patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as raised:

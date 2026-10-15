@@ -2,7 +2,8 @@
 
 Detects shots (detect.py), captions contact sheets with Claude, and attaches
 word-timed Whisper dialogue and/or text subtitles, from the video or a subtitle file.
-Writes OUT_DIR/shots.json. See docs/pipeline.md.
+Writes OUT_DIR/shots.json. --no-captions stops after the stills, sheets and transcript.
+See docs/pipeline.md.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, TypeVar, cast
+import unicodedata
 
 import numpy as np
 from numpy.typing import NDArray
@@ -47,6 +49,8 @@ SAMPLE_RATE = 16_000  # Whisper's input rate
 SHEET_COLUMNS = 3
 TILE_WIDTH = 512  # 3 x 512 px sheets stay inside the 1568 px edge older Claude models accept unscaled
 LABEL_SIZE = 20
+CAPTION_MODEL = "claude-haiku-5-5"
+SHEET_SIZE = 12  # shots per contact sheet
 CAPTION_MAX_TOKENS = 16_000
 CLAUDE_ATTEMPTS = 3
 CLAUDE_TIMEOUT_S = 600  # one claude -p call per sheet; about 15 s is typical
@@ -56,6 +60,22 @@ NO_CREDENTIALS = ("--captioner api calls the Anthropic API, which needs ANTHROPI
                   "with no key")
 TEXT_SUBTITLE_CODECS = frozenset({"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"})
 SUBTITLE_FILE_SUFFIXES = frozenset({".srt", ".ass", ".ssa", ".vtt"})
+# Whisper's codes for the ISO 639-2 language tags (both the /B and /T forms) audio tracks carry for common
+# languages. Any other tag leaves the language to Whisper's own detection.
+AUDIO_LANGUAGES = {
+    "jpn": "ja", "eng": "en", "kor": "ko", "chi": "zh", "zho": "zh", "cmn": "zh", "spa": "es", "fre": "fr",
+    "fra": "fr", "ger": "de", "deu": "de", "ita": "it", "por": "pt", "rus": "ru", "pol": "pl", "tur": "tr",
+    "ara": "ar", "hin": "hi", "tha": "th", "vie": "vi", "ind": "id", "may": "ms", "msa": "ms", "dut": "nl",
+    "nld": "nl", "swe": "sv", "nor": "no", "nob": "no", "dan": "da", "fin": "fi", "cze": "cs", "ces": "cs",
+    "hun": "hu", "ukr": "uk", "heb": "he", "gre": "el", "ell": "el", "tgl": "tl", "fil": "tl", "rum": "ro",
+    "ron": "ro", "cat": "ca",
+}
+OFFSET_SEARCH_S = 120.0  # how far subtitles can be shifted from the dialogue and still be measured
+OFFSET_STEP_S = 0.1
+OFFSET_TOLERANCE_S = 0.5  # a cue starting this close to a Whisper line's start matches it
+OFFSET_WARN_S = 1.0
+OFFSET_MIN_MATCHED = 0.5  # share of cues that must match at the best shift; at any shift about a third do by chance
+OFFSET_MIN_LINES = 20  # cues and Whisper lines each; fewer can't be compared
 
 CAPTION_INSTRUCTIONS = """\
 You caption contact sheets for a video editor's shot index. Each tile is one shot from the same video; \
@@ -114,6 +134,8 @@ MARKUP = re.compile(r"<[^>]*>|\{[^}]*\}|\\[Nnh]")
 HEADING = re.compile(r"(#{1,2})\s+(.+?)[\s#]*")  # markdown # and ## headings
 POSSIBLY = re.compile(r"possibly\s+", re.IGNORECASE)
 UNIDENTIFIED = re.compile(r"unidentified\b", re.IGNORECASE)
+CAST_HEADING = re.compile(r"###\s+(.+?)[\s#]*")
+PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")  # "Kenjaku (in Suguru Geto's body)" names Kenjaku
 ASS_DRAWING = re.compile(r"(?:[mnlbspc](?:\s+-?\d+(?:\.\d+)?)+\s*)+")  # vector shapes from typeset signs
 
 Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
@@ -167,6 +189,12 @@ class Stream(TypedDict):
     language: str | None
     title: str | None
     default: bool
+
+
+class SubtitleTiming(TypedDict):
+    offset: float  # seconds the cues start after the speech; negative when they start before it
+    matched: int  # cues starting within OFFSET_TOLERANCE_S of a Whisper line at that offset
+    cues: int
 
 
 class IndexedShot(TypedDict):
@@ -265,6 +293,58 @@ def read_context(path: Path) -> tuple[str | None, str]:
     if not section:
         raise ValueError(f"{path} has no '## Cast' section; see docs/pipeline.md for the format")
     return title, section
+
+
+def cast_names(cast: str) -> list[str]:
+    """The name of each `### ` entry in a cast section, without a trailing (parenthetical)."""
+    names: list[str] = []
+    for line in cast.splitlines():
+        if heading := CAST_HEADING.fullmatch(line.strip()):
+            name = PARENTHETICAL.sub("", heading[1]).strip() or heading[1]
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def name_key(name: str) -> str:
+    """A name for comparing: casefolded, without accents or apostrophes, other punctuation as spaces. "Zen'in",
+    "Zenin" and "ZENIN" have the same key, and so do "Tamamo-no-Mae" and "Tamamo no Mae"."""
+    text = "".join(ch for ch in unicodedata.normalize("NFKD", name.casefold()) if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"\W+", " ", re.sub(r"['’`]", "", text)).split())
+
+
+def canonical_name(name: str, names: Sequence[str]) -> str:
+    """The cast notes' spelling of a caption's name. A name matches a cast name with the same key, or else the one
+    cast name whose words include all of its words, so "Gojo" and "Gojo Satoru" become "Satoru Gojo" while
+    "Fushiguro" stays as it is when the notes have two. A trailing (parenthetical) is ignored. Other names are kept."""
+    for candidate in (PARENTHETICAL.sub("", name), name):
+        key = name_key(candidate)
+        if not key:
+            continue
+        exact = [n for n in names if name_key(n) == key]
+        if exact:
+            return exact[0]
+        words = set(key.split())
+        partial = [n for n in names if words <= set(name_key(n).split())]
+        if len(partial) == 1:
+            return partial[0]
+    return name
+
+
+def merge_characters(characters: Sequence[Character]) -> list[Character]:
+    """One entry per name, in order, certain if any entry was."""
+    merged: dict[str, Character] = {}
+    for c in characters:
+        if c["name"] in merged:
+            merged[c["name"]]["certain"] = merged[c["name"]]["certain"] or c["certain"]
+        else:
+            merged[c["name"]] = Character(name=c["name"], certain=c["certain"])
+    return list(merged.values())
+
+
+def canonical_characters(characters: Sequence[Character], names: Sequence[str]) -> list[Character]:
+    return merge_characters([Character(name=canonical_name(c["name"], names), certain=c["certain"])
+                             for c in characters])
 
 
 def caption_prompt(title: str | None, cast: str | None) -> str:
@@ -476,6 +556,26 @@ def pick_stream(streams: Sequence[Stream], index: int, prefix: str, flag: str) -
     return streams[index]
 
 
+def tag_language(tag: str | None) -> str | None:
+    """Whisper's code for an audio track's language tag, "jpn" or "ja" alike; None for a missing, undetermined
+    or unlisted tag."""
+    tag = (tag or "").strip().casefold()
+    if tag in AUDIO_LANGUAGES:
+        return AUDIO_LANGUAGES[tag]
+    return tag if tag in AUDIO_LANGUAGES.values() else None
+
+
+def dialogue_language(lang: str | None, stream: Stream) -> tuple[str | None, str]:
+    """The language Whisper transcribes in (None: it detects one) and where that choice came from. --lang wins, and
+    --lang auto asks for detection; otherwise the track's language tag decides."""
+    if lang is not None:
+        return (None, "--lang auto") if lang.casefold() == "auto" else (lang, "--lang")
+    tag = stream["language"]
+    if (code := tag_language(tag)) is not None:
+        return code, f"the audio track's {tag} tag"
+    return None, f"auto-detect, since the audio track's tag is {tag or 'missing'}"
+
+
 def decode_audio(video: Path, stream: int) -> NDArray[np.float32]:
     """Decode one audio stream to mono 16 kHz float samples, as Whisper expects."""
     raw = run_tool(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-map", f"0:a:{stream}",
@@ -548,19 +648,79 @@ def subtitle_files_beside(video: Path) -> list[Path]:
                   and p.is_file())
 
 
+def nearest_starts(starts: NDArray[np.float64], times: NDArray[np.float64]) -> NDArray[np.float64]:
+    """For each time, the closest of the sorted starts."""
+    k = np.searchsorted(starts, times)
+    before = starts[np.clip(k - 1, 0, len(starts) - 1)]
+    after = starts[np.clip(k, 0, len(starts) - 1)]
+    return np.where(np.abs(times - before) <= np.abs(times - after), before, after)
+
+
+def subtitle_offset(dialogue: Sequence[Line], subtitles: Sequence[Line]) -> SubtitleTiming | None:
+    """How far subtitle cues start from Whisper's line starts, by timing alone, since the two are often in different
+    languages. None when either has fewer than OFFSET_MIN_LINES lines.
+
+    Lines come so often that some line starts near any cue at any shift, so the nearest start alone says nothing.
+    This finds the shift, in OFFSET_STEP_S steps up to OFFSET_SEARCH_S either way, at which the most cues start within
+    OFFSET_TOLERANCE_S of a line, then takes the median gap over those matched cues."""
+    if len(dialogue) < OFFSET_MIN_LINES or len(subtitles) < OFFSET_MIN_LINES:
+        return None
+    starts = np.sort(np.array([line["start"] for line in dialogue], dtype=np.float64))
+    cues = np.array([cue["start"] for cue in subtitles], dtype=np.float64)
+    shifts = np.arange(-OFFSET_SEARCH_S, OFFSET_SEARCH_S + OFFSET_STEP_S / 2, OFFSET_STEP_S)
+    counts = [int((np.abs(nearest_starts(starts, cues - shift) - (cues - shift)) <= OFFSET_TOLERANCE_S).sum())
+              for shift in shifts]
+    shift = float(shifts[int(np.argmax(counts))])
+    nearest = nearest_starts(starts, cues - shift)
+    matched = np.abs(nearest - (cues - shift)) <= OFFSET_TOLERANCE_S
+    offset = float(np.median(cues[matched] - nearest[matched])) if matched.any() else shift
+    return SubtitleTiming(offset=round(offset, 2), matched=int(matched.sum()), cues=len(cues))
+
+
+def subtitle_timing_note(timing: SubtitleTiming | None) -> str:
+    """What the timing check found, as a line that starts with "warning: " when the subtitles need a look."""
+    if timing is None:
+        return f"subtitle timing not checked: it needs {OFFSET_MIN_LINES} subtitle cues and Whisper lines"
+    share = f'{timing["matched"]} of {timing["cues"]} cues'
+    if timing["matched"] < OFFSET_MIN_MATCHED * timing["cues"]:
+        return (f"warning: the subtitles don't line up with the dialogue at any shift up to {OFFSET_SEARCH_S:.0f} s "
+                f"(at best {share} start with a Whisper line). Are they for this video? Check a few cues "
+                "against `dialogue` in shots.json")
+    offset = timing["offset"]
+    if abs(offset) > OFFSET_WARN_S:
+        early_late = "late" if offset > 0 else "early"
+        return (f"warning: the subtitles start {abs(offset):.1f} s {early_late} against the dialogue (median over "
+                f"{share} matched to Whisper lines). A file for another release of the video? Shift it with "
+                f"`ffmpeg -itsoffset {-offset:.2f} -i IN.srt OUT.srt` and pass OUT.srt")
+    return f"subtitle timing matches the dialogue: offset {round(offset, 1) + 0.0:+.1f} s over {share}"
+
+
+def detected_shots(out: Path) -> list[Shot]:
+    """The shots an index has detected, in order. Raises ValueError when OUT_DIR has none yet."""
+    path = out / "cache" / "detection.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))["data"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise ValueError(f"no shots detected in {out} yet ({e})") from None
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"no shots detected in {out} yet")
+    return cast("list[Shot]", data)
+
+
 def overlapping(lines: Sequence[Line], start: float, end: float) -> list[Line]:
     return [line for line in lines if line["start"] < end and line["end"] > start]
 
 
 def build_shots(rows: Sequence[Shot], captions: Mapping[str, Caption], dialogue: Sequence[Line] | None,
-                subtitles: Sequence[Line] | None) -> list[IndexedShot]:
+                subtitles: Sequence[Line] | None, names: Sequence[str] = ()) -> list[IndexedShot]:
+    """The index, with each caption's names in the cast notes' spelling (see canonical_name)."""
     shots: list[IndexedShot] = []
     for s in rows:
         caption = captions[str(s["i"])]
         shot = IndexedShot(id=s["i"], start=s["start"], end=s["end"],
                            keyframe=Still(time=round(s["best"], 3), file=s["file"]),
-                           first_frame=s["first"], last_frame=s["last"],
-                           caption=caption["caption"], characters=caption["characters"],
+                           first_frame=s["first"], last_frame=s["last"], caption=caption["caption"],
+                           characters=canonical_characters(caption["characters"], names),
                            motion=s["motion"], flashes=s["flashes"], look=s["look"])
         if dialogue is not None:
             shot["dialogue"] = overlapping(dialogue, s["start"], s["end"])
@@ -578,13 +738,17 @@ def main() -> None:
     ap.add_argument("--captioner", choices=["claude", "api", "agent"], default="claude",
                     help="claude: `claude -p` on your Claude Code sign-in; api: the Anthropic API (needs a key); "
                          "agent: write caption_jobs.json for Claude Code agents")
-    ap.add_argument("--caption-model", default="claude-haiku-5-5", help="model for --captioner api and claude")
+    ap.add_argument("--caption-model", default=CAPTION_MODEL, help="model for --captioner api and claude")
     ap.add_argument("--title", help="what the video is, e.g. a show and season; default: --context's # heading")
     ap.add_argument("--context", type=Path, help="markdown whose ## Cast section says how to recognize characters")
-    ap.add_argument("--sheet-size", type=positive_int, default=12, help="shots per caption sheet")
+    ap.add_argument("--sheet-size", type=positive_int, default=SHEET_SIZE, help="shots per caption sheet")
     ap.add_argument("--workers", type=positive_int, default=10, help="sheets captioned at once")
+    ap.add_argument("--captions", action=argparse.BooleanOptionalAction, default=True,
+                    help="caption the sheets and write shots.json; --no-captions stops after the stills, sheets, "
+                         "transcript and subtitles, with no Claude")
     ap.add_argument("--whisper-model", default="small")
-    ap.add_argument("--lang", help="language code; default auto-detect")
+    ap.add_argument("--lang", help="Whisper language code, or auto to detect it; default: the audio track's language "
+                                   "tag, or detection when it has none")
     ap.add_argument("--audio-stream", type=int, default=0, help="audio stream to transcribe (0:a:N)")
     subs_source = ap.add_mutually_exclusive_group()
     subs_source.add_argument("--subs-stream", type=int, help="text subtitle stream to add as subtitles (0:s:N)")
@@ -614,8 +778,11 @@ def main() -> None:
         raise SystemExit(f"{video.name} has no audio streams; pass --no-transcribe")
     audio_stream = pick_stream(audio, a.audio_stream, "a", "--audio-stream") if a.transcribe else None
     subs_stream = pick_stream(subs, a.subs_stream, "s", "--subs-stream") if a.subs_stream is not None else None
+    lang: str | None = None
     if audio_stream is not None:
-        print(f"dialogue from {describe(audio_stream, 'a')} ({len(audio)} audio streams)", flush=True)
+        lang, lang_source = dialogue_language(a.lang, audio_stream)
+        print(f"dialogue from {describe(audio_stream, 'a')} ({len(audio)} audio streams), "
+              f"language {lang or 'auto-detect'} ({lang_source})", flush=True)
     file_subs: list[Line] | None = None
     if a.subs is not None:
         try:
@@ -644,13 +811,13 @@ def main() -> None:
     transcript: Transcript | None = None
     transcript_job: Future[Transcript] | None = None
     if audio_stream is not None:
-        transcript_sig = {**source, "model": a.whisper_model, "lang": a.lang, "vad": a.vad,
+        transcript_sig = {**source, "model": a.whisper_model, "lang": lang, "vad": a.vad,
                           "audio_stream": audio_stream["index"], "version": TRANSCRIPT_VERSION}
         transcript = cast("Transcript | None", cached(cache / "transcript.json", transcript_sig))
         if transcript is None:
             print("transcribing dialogue in the background", flush=True)
             transcript_job = background.submit(transcribe_and_save, video, audio_stream["index"], a.whisper_model,
-                                               a.lang, a.vad, cache / "transcript.json", transcript_sig)
+                                               lang, a.vad, cache / "transcript.json", transcript_sig)
 
     signature = {**source, "faces": a.faces, "sample": a.sample, "threshold": a.threshold,
                  "min_len": a.min_len, "proxy": a.proxy, "version": DETECTION_VERSION}
@@ -695,8 +862,10 @@ def main() -> None:
     for stale in sheets.glob("sheet_*.jpg"):
         if stale.name not in current:
             stale.unlink()
-    pending = jobs if a.captioner == "agent" else []
-    if pending:
+    pending = jobs if a.captioner == "agent" and a.captions else []
+    if not a.captions:
+        pass
+    elif pending:
         replies.mkdir(exist_ok=True)
         jobs_file = write_caption_jobs(out, pending, title, cast_notes)
         print(f"{len(pending)} sheets need captions: follow {jobs_file}", flush=True)
@@ -725,12 +894,17 @@ def main() -> None:
         if subtitles is None:
             subtitles = read_subtitles(video, subs_stream)
             save(cache / "subtitles.json", {"signature": subtitles_sig, "data": subtitles})
+    if dialogue is not None and subtitles is not None:
+        print(subtitle_timing_note(subtitle_offset(dialogue, subtitles)), flush=True)
 
+    if not a.captions:
+        print(f"prepared {len(rows)} shots on {len(groups)} contact sheets in {sheets}, without captions")
+        return
     if pending:
         print(f"shots.json not written: waiting on captions for {len(pending)} sheets", flush=True)
         return
     (out / CAPTION_JOBS).unlink(missing_ok=True)
-    shots = build_shots(rows, captions, dialogue, subtitles)
+    shots = build_shots(rows, captions, dialogue, subtitles, cast_names(cast_notes) if cast_notes else ())
     save(out / "shots.json", shots)
     print(f'{len(shots)} shots -> {out / "shots.json"}')
 

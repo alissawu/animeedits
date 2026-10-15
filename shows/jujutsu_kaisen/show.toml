@@ -1,0 +1,52 @@
+# Jujutsu Kaisen: the research every edit of this show shares. docs/indexing.md explains each field.
+# Video and subtitle paths start in media/; cast notes and synopses in this folder.
+title = "Jujutsu Kaisen"
+
+[[groups]]
+name = "Jujutsu Kaisen 0"
+cast = "cast/jujutsu_kaisen_0.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/movie/Jujutsu_Kaisen_0.Japanese.mp4"
+subs = "jujutsu_kaisen/movie/Jujutsu_Kaisen_0.Japanese.en.srt"
+synopsis = "synopses/jujutsu_kaisen_0.md"
+
+# Season 2, episodes 1-5 (25-29 overall): 2006-2007, Gojo, Geto and Shoko as students.
+[[groups]]
+name = "Hidden Inventory / Premature Death"
+cast = "cast/s2_hidden_inventory.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E01.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E01.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e01.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E02.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E02.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e02.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E03.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E03.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e03.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E04.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E04.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e04.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E05.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E05.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e05.md"
+
+# Season 2, from episode 6 (30 overall): Shibuya, 2018.
+[[groups]]
+name = "Shibuya Incident"
+cast = "cast/s2_shibuya.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e11.md"
