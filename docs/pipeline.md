@@ -53,7 +53,7 @@ The context file looks like this:
 
 Each cast entry needs identifiers that survive a thumbnail: hair color and style, eye color, outfit, signature accessories, and alternate or monster forms. `## Scenes` and `## Moments` are optional and not used for captions. A file without a non-empty `## Cast` section is rejected.
 
-`--sheet-size N` sets shots per sheet (default 12). Sheets are three 512 px tiles wide, so fewer shots per sheet means larger tiles after the API's downscaling. Dark night scenes caption badly when tiles are small.
+`--sheet-size N` sets shots per sheet (default 12). Sheets are three 512 px tiles wide, so fewer shots per sheet means larger tiles after the API's downscaling. The model matters more than tile size: Haiku 4.5 misreads dark night tiles even at 6 shots per sheet, where Haiku 5.5 reads them at 12.
 
 ### Captioning with agents
 
@@ -77,7 +77,7 @@ The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks 
 
 Whisper runs with voice-activity detection by default, which keeps it from inventing lines over music and silence. On edits, where dialogue is mixed under a song, it can drop every line: on the White Light reference edit it removed both. Use `--no-vad` there.
 
-Defaults are `--caption-model claude-haiku-4-5`, `--workers 4`, `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
+Defaults are `--caption-model claude-haiku-5-5`, `--workers 4`, `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
 
 ### shots.json
 

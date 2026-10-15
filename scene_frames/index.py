@@ -469,7 +469,7 @@ def main() -> None:
     add_detection_args(ap)
     ap.add_argument("--captioner", choices=["api", "agent"], default="api",
                     help="api: call Claude with an API key; agent: write caption_jobs.json for Claude Code agents")
-    ap.add_argument("--caption-model", default="claude-haiku-4-5", help="model for --captioner api")
+    ap.add_argument("--caption-model", default="claude-haiku-5-5", help="model for --captioner api")
     ap.add_argument("--title", help="what the video is, e.g. a show and season; default: --context's # heading")
     ap.add_argument("--context", type=Path, help="markdown whose ## Cast section says how to recognize characters")
     ap.add_argument("--sheet-size", type=positive_int, default=12, help="shots per caption sheet")
