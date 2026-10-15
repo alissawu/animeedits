@@ -44,7 +44,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 
 | Need | Command | Docs |
 |---|---|---|
-| Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO OUT_DIR --context FILE` | [pipeline.md](docs/pipeline.md) |
+| Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO out/index/NAME ...`, full command below | [pipeline.md](docs/pipeline.md) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
 | Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
 
@@ -52,12 +52,15 @@ Things you can't see from the code:
 - **Sung lyrics:** Whisper gets the timing right but often the words wrong. Take the words from the published lyrics and the timing from Whisper. [LRCLIB](https://lrclib.net) has time-synced lyrics; Genius pages are often incomplete.
 - **Dialogue buried under music in footage:** before transcribing, `index.py` skips stretches it thinks have no speech (voice activity detection, or VAD). That also drops lines mixed under a song or loud score. If a scene's dialogue is missing from `shots.json`, rerun with `--no-vad`. `analyze_edit.py` already runs without VAD.
 - **Vertical crops:** a 9:16 crop of 16:9 footage keeps only the middle third. Subjects at the edges disappear, like two hands at either side of the frame. Set each clip's `crop` focus and check it on the proof sheet.
-- **Index each film or episode once.** Reuse its output directory; every stage is cached.
+- **Indexes are shared between edits.** Index each film or episode into `out/index/NAME/`, where NAME is the video's file name without its extension, with exactly this command:
+  `python scene_frames/index.py VIDEO out/index/NAME --sample 5 --proxy 480 --faces anime --lang LANG --context out/index/SHOW.md`
+  LANG is the audio's language (`en`, `ja`). Add `--subs FILE` when index.py lists a subtitle file beside the video. Every stage is cached, so the command finishes a partial index, and on a finished one it only rebuilds the contact sheets, a minute or two. Other options redo detection for the whole video.
+- **Cast notes are shared too.** `out/index/SHOW.md` (e.g. `chainsaw_man.md`) holds one show's cast notes for every video of it. If captions keep misnaming someone, fix the notes, but every video of that show gets re-captioned.
 - **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in.
 
 ## Files
 
-- `media/`: songs and source video. `out/<edit-name>/`: everything a run produces (research notes, indexes, song map, EDL, renders). Both are gitignored, so they exist only in the main checkout: make edits there, not in a git worktree. Never commit media.
+- `media/`: songs and source video. `out/index/`: shared indexes and cast notes. `out/<edit-name>/`: everything else a run produces (research notes, song map, EDL, renders). `media/` and `out/` are gitignored, so they exist only in the main checkout: make edits there, not in a git worktree. Never commit media.
 - `breakdowns/`: dissected reference edits, the taste reference.
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
