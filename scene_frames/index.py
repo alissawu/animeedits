@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -48,7 +48,7 @@ SHEET_COLUMNS = 3
 TILE_WIDTH = 512  # 3 x 512 px sheets stay inside the 1568 px edge older Claude models accept unscaled
 LABEL_SIZE = 20
 CAPTION_MAX_TOKENS = 16_000
-CAPTION_ATTEMPTS = 3
+CLAUDE_ATTEMPTS = 3
 CLAUDE_TIMEOUT_S = 600  # one claude -p call per sheet; about 15 s is typical
 CAPTION_JOBS = "caption_jobs.json"
 NO_CREDENTIALS = ("--captioner api calls the Anthropic API, which needs ANTHROPIC_API_KEY or an `ant auth login` "
@@ -117,6 +117,7 @@ UNIDENTIFIED = re.compile(r"unidentified\b", re.IGNORECASE)
 ASS_DRAWING = re.compile(r"(?:[mnlbspc](?:\s+-?\d+(?:\.\d+)?)+\s*)+")  # vector shapes from typeset signs
 
 Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+T = TypeVar("T")
 
 
 class Character(TypedDict):
@@ -316,17 +317,17 @@ def sheet_request(ids: Sequence[int]) -> str:
     return "Shot IDs on this sheet: " + ", ".join(map(str, ids))
 
 
-def with_retries(ask: Callable[[], str], ids: Sequence[int], sheet: Path) -> dict[str, Caption]:
-    """Ask for a sheet's captions until a reply validates. ask raises ValueError for a reply worth retrying."""
+def with_retries(attempt: Callable[[], T], what: str) -> T:
+    """Call attempt until it returns, up to CLAUDE_ATTEMPTS times. It raises ValueError for a reply worth retrying."""
     error: ValueError | None = None
-    for attempt in range(CAPTION_ATTEMPTS):
+    for k in range(CLAUDE_ATTEMPTS):
         try:
-            return parse_captions(ask(), set(ids))
+            return attempt()
         except ValueError as e:
             error = e
-            if attempt + 1 < CAPTION_ATTEMPTS:
-                time.sleep(2 ** attempt)
-    raise ValueError(f"invalid captions for {sheet.name}: {error}")
+            if k + 1 < CLAUDE_ATTEMPTS:
+                time.sleep(2 ** k)
+    raise ValueError(f"invalid {what}: {error}")
 
 
 def caption_sheet(client: Anthropic, group: Sequence[Shot], sheet: Path, model: str,
@@ -347,48 +348,55 @@ def caption_sheet(client: Anthropic, group: Sequence[Shot], sheet: Path, model: 
         if reply.stop_reason != "end_turn":
             raise ValueError(f"reply stopped with {reply.stop_reason}")
         return "".join(b.text for b in reply.content if b.type == "text")
-    return with_retries(ask, ids, sheet)
+    return with_retries(lambda: parse_captions(ask(), set(ids)), f"captions for {sheet.name}")
+
+
+def claude_cli(content: Sequence[Mapping[str, object]], system: str, schema: Mapping[str, object], model: str,
+               cwd: Path, timeout: int = CLAUDE_TIMEOUT_S) -> str:
+    """Send one user message to `claude -p` on the user's Claude Code sign-in, with no tools, settings, MCP
+    servers or CLAUDE.md loaded, and return its structured output as JSON text. Raises ValueError for a
+    failure worth retrying and RuntimeError for one that isn't."""
+    message = {"type": "user", "message": {"role": "user", "content": list(content)}}
+    cmd = ["claude", "-p", "--model", model, "--system-prompt", system, "--tools", "",
+           "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--input-format",
+           "stream-json", "--output-format", "stream-json", "--verbose", "--json-schema", json.dumps(schema)]
+    # Without these, claude would bill an API key instead of the sign-in.
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    try:
+        proc = subprocess.run(cmd, input=json.dumps(message) + "\n", capture_output=True, text=True, env=env,
+                              cwd=cwd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"claude took longer than {timeout} s") from None
+    events = []
+    for line in proc.stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    result = next((e for e in events if isinstance(e, dict) and e.get("type") == "result"), None)
+    if result is None:
+        raise RuntimeError(f"claude exited with {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-500:]}")
+    if result.get("is_error") or result.get("subtype") != "success":
+        raise ValueError(f"claude: {result.get('result') or result.get('subtype')}")
+    # An alias can be remapped in settings; a full model ID must come back as itself.
+    used = list(result.get("modelUsage") or {})
+    if model.startswith("claude-") and model not in used:
+        raise RuntimeError(f"claude ran {', '.join(used) or 'an unknown model'} instead of {model}")
+    return json.dumps(result.get("structured_output"))
 
 
 def caption_sheet_cli(group: Sequence[Shot], sheet: Path, model: str, title: str | None = None,
                       cast: str | None = None) -> dict[str, Caption]:
-    """Caption a sheet with `claude -p` on the user's Claude Code sign-in: the same prompt, image and
-    schema as the API path, with no tools, settings, MCP servers or CLAUDE.md loaded."""
+    """Caption a sheet with `claude -p`: the same prompt, image and schema as the API path."""
     ids = [s["i"] for s in group]
-    message = {"type": "user", "message": {"role": "user", "content": [
+    content: list[dict[str, object]] = [
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                      "data": base64.b64encode(sheet.read_bytes()).decode()}},
         {"type": "text", "text": sheet_request(ids)},
-    ]}}
-    cmd = ["claude", "-p", "--model", model, "--system-prompt", caption_prompt(title, cast), "--tools", "",
-           "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--input-format",
-           "stream-json", "--output-format", "stream-json", "--verbose", "--json-schema", json.dumps(CAPTION_SCHEMA)]
-    # Without these, claude would bill an API key instead of the sign-in.
-    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
-
-    def ask() -> str:
-        try:
-            proc = subprocess.run(cmd, input=json.dumps(message) + "\n", capture_output=True, text=True, env=env,
-                                  cwd=sheet.parent, timeout=CLAUDE_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            raise ValueError(f"claude took longer than {CLAUDE_TIMEOUT_S} s") from None
-        events = []
-        for line in proc.stdout.splitlines():
-            try:
-                events.append(json.loads(line))
-            except ValueError:
-                continue
-        result = next((e for e in events if isinstance(e, dict) and e.get("type") == "result"), None)
-        if result is None:
-            raise RuntimeError(f"claude exited with {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-500:]}")
-        if result.get("is_error") or result.get("subtype") != "success":
-            raise ValueError(f"claude: {result.get('result') or result.get('subtype')}")
-        # An alias can be remapped in settings; a full model ID must come back as itself.
-        used = list(result.get("modelUsage") or {})
-        if model.startswith("claude-") and model not in used:
-            raise RuntimeError(f"claude ran {', '.join(used) or 'an unknown model'} instead of {model}")
-        return json.dumps(result.get("structured_output"))
-    return with_retries(ask, ids, sheet)
+    ]
+    system = caption_prompt(title, cast)
+    return with_retries(lambda: parse_captions(claude_cli(content, system, CAPTION_SCHEMA, model, sheet.parent),
+                                               set(ids)), f"captions for {sheet.name}")
 
 
 def run_captioner(jobs: Sequence[CaptionJob], caption: Callable[[CaptionJob], dict[str, Caption]],

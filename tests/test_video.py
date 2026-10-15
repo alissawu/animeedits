@@ -372,7 +372,7 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "m
             with reply({"type": "result", "subtype": "error_during_execution", "is_error": True}) as run, \
                     mock.patch.object(index.time, "sleep"), self.assertRaises(ValueError):
                 index.caption_sheet_cli([{"i": 1}], sheet, "claude-haiku-5-5")
-            self.assertEqual(run.call_count, index.CAPTION_ATTEMPTS)
+            self.assertEqual(run.call_count, index.CLAUDE_ATTEMPTS)
 
             with reply({"type": "result", "subtype": "success", "modelUsage": {"claude-haiku-5-5": {}},
                         "structured_output": good}):
