@@ -12,13 +12,16 @@ and only the logins given to it. It's a background-only process with no window a
 no Allow prompt. Use it when the user's Chrome isn't available.
 
 usage:
+  python tools/browser.py status                 # can reads use the user's Chrome? never prompts
   python tools/browser.py text URL [--profile]   # title, final URL and visible text
   python tools/browser.py html URL [--profile]   # rendered HTML
   python tools/browser.py stop                   # stop the helper (and the headless profile Chrome)
   python tools/browser.py login [URL ...]        # profile only: sign in once (opens a window), then Cmd+Q
 
 `text` and `html` start the helper when it isn't running. For the user's Chrome that
-shows an Allow prompt in Chrome, so tell the user before the first read.
+shows an Allow prompt in Chrome, so tell the user before the first read. `status` checks
+without connecting and prints one of: `connected` (a helper is running; reads won't
+prompt), `ready` (the first read will prompt) or `off` (exit 3).
 
 Exit codes: 2 when a page is a login wall, bot challenge or 401/403/429 (reported,
 never worked around); 3 when no debuggable Chrome is available or the user did not Allow.
@@ -275,6 +278,19 @@ def ensure_helper(use_profile: bool) -> dict[str, Any]:
     raise SystemExit(3)
 
 
+def status() -> None:
+    """Report whether reads can use the user's Chrome, without connecting to it (so no Allow prompt)."""
+    state = helper_state()
+    if state is not None and not state["profile"]:
+        print("connected: reads go through the user's Chrome with no Allow prompt.")
+        return
+    if user_chrome_endpoint() is None:
+        print(f"off: {NO_CHROME}")
+        raise SystemExit(3)
+    note = " A --profile helper is running; run `python tools/browser.py stop` first." if state is not None else ""
+    print(f"ready: the first read will ask the user to click Allow in Chrome.{note}")
+
+
 def stop() -> None:
     state = helper_state()
     if state is not None:
@@ -298,6 +314,7 @@ def login(urls: list[str]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status")
     sub.add_parser("stop")
     sub.add_parser("login").add_argument("urls", nargs="*")
     serve_cmd = sub.add_parser("serve", help="hold one connection open (started automatically by text/html)")
@@ -309,7 +326,9 @@ def main() -> None:
         cmd.add_argument("url")
         cmd.add_argument("--profile", action="store_true", help="use the separate headless research profile")
     a = ap.parse_args()
-    if a.cmd == "stop":
+    if a.cmd == "status":
+        status()
+    elif a.cmd == "stop":
         stop()
     elif a.cmd == "login":
         login(a.urls)
