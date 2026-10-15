@@ -200,6 +200,26 @@ class DialogueTests(unittest.TestCase):
         self.assertNotIn("subtitles", shots[0])
         self.assertNotIn("dialogue", index.build_shots(rows, captions, None, [])[0])
 
+    def test_subtitle_file_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = Path(tmp) / "notes.txt"
+            notes.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+            with self.assertRaisesRegex(ValueError, "not a subtitle file"):
+                index.read_subtitle_file(notes)
+            shift_jis = Path(tmp) / "ep.srt"
+            shift_jis.write_bytes("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n".encode("shift_jis"))
+            with self.assertRaisesRegex(ValueError, "not UTF-8"):
+                index.read_subtitle_file(shift_jis)
+
+    def test_subtitle_files_beside(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("EP1.mp4", "EP1.srt", "EP1.en.ASS", "EP10.srt", "EP1.txt", "other.vtt"):
+                (root / name).write_text("")
+            (root / "EP1.old.srt").mkdir()
+            self.assertEqual([p.name for p in index.subtitle_files_beside(root / "EP1.mp4")],
+                             ["EP1.en.ASS", "EP1.srt"])
+
 
 if __name__ == "__main__":
     unittest.main()

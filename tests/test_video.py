@@ -177,6 +177,18 @@ class SyntheticVideoTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             index.pick_stream(audio, 2, "a", "--audio-stream")
 
+    def test_read_subtitle_files(self) -> None:
+        srt = self.root / "subs.srt"
+        files = [srt]
+        for suffix in (".ass", ".vtt"):
+            files.append(self.root / f"converted{suffix}")
+            ffmpeg("-i", str(srt), str(files[-1]))
+        for path in files:
+            self.assertEqual(index.read_subtitle_file(path), [
+                {"start": 0.5, "end": 1.2, "text": "First line"},
+                {"start": 2.0, "end": 3.4, "text": "Spans the cut"},
+            ], path.name)
+
     def test_index_end_to_end(self) -> None:
         """index.py with a fake Claude client: captions, subtitles, caching and shots.json."""
         out = self.root / "index"
@@ -210,11 +222,13 @@ class SyntheticVideoTests(unittest.TestCase):
         fake.Anthropic = Anthropic  # type: ignore[attr-defined]
         fake.CredentialsError = CredentialsError  # type: ignore[attr-defined]
 
+        printed = io.StringIO()
+
         def run(*args: str) -> list[Any]:
             argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", "--captioner", "api",
                     *args]
             with mock.patch.object(sys, "argv", argv), mock.patch.dict(sys.modules, {"anthropic": fake}), \
-                    contextlib.redirect_stdout(io.StringIO()):
+                    contextlib.redirect_stdout(printed):
                 index.main()
             return json.loads((out / "shots.json").read_text())  # type: ignore[no-any-return]
 
@@ -246,6 +260,19 @@ class SyntheticVideoTests(unittest.TestCase):
 
         self.assertEqual(run("--subs-stream", "0"), shots)
         self.assertEqual(len(calls), 2, "a rerun is served from the caches")
+
+        self.assertEqual(run("--subs", str(self.root / "subs.srt")), shots,
+                         "a subtitle file gives the same cues as the same subtitles inside the video")
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            run("--subs", str(self.root / "subs.srt"), "--subs-stream", "0")
+        beside = self.root / "streams.en.srt"
+        beside.write_text(SUBTITLES)
+        try:
+            run()
+        finally:
+            beside.unlink()
+        self.assertIn("subtitle files beside the video: streams.en.srt. Pass --subs FILE", printed.getvalue())
 
         run("--title", "Test Pattern")
         self.assertEqual(len(calls), 4, "a new title means new captions")

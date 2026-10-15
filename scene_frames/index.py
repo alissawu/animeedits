@@ -1,7 +1,7 @@
 """Build a resumable shot index for an edit director: index.py VIDEO OUT_DIR.
 
 Detects shots (detect.py), captions contact sheets with Claude, and attaches
-word-timed Whisper dialogue and/or an embedded text subtitle stream.
+word-timed Whisper dialogue and/or text subtitles, from the video or a subtitle file.
 Writes OUT_DIR/shots.json. See docs/pipeline.md.
 """
 from __future__ import annotations
@@ -55,6 +55,7 @@ NO_CREDENTIALS = ("--captioner api calls the Anthropic API, which needs ANTHROPI
                   "profile; Claude Code's sign-in doesn't reach it. --captioner claude captions through Claude Code "
                   "with no key")
 TEXT_SUBTITLE_CODECS = frozenset({"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"})
+SUBTITLE_FILE_SUFFIXES = frozenset({".srt", ".ass", ".ssa", ".vtt"})
 
 CAPTION_INSTRUCTIONS = """\
 You caption contact sheets for a video editor's shot index. Each tile is one shot from the same video; \
@@ -518,6 +519,27 @@ def read_subtitles(video: Path, stream: Stream) -> list[Line]:
     return parse_srt(srt.decode("utf-8", errors="replace"))
 
 
+def read_subtitle_file(path: Path) -> list[Line]:
+    """Cues from an SRT, ASS/SSA or WebVTT file. Raises ValueError for anything else."""
+    if path.suffix.lower() not in SUBTITLE_FILE_SUFFIXES:
+        raise ValueError(f"{path.name} is not a subtitle file; use .srt, .ass, .ssa or .vtt")
+    # ffmpeg reads subtitle files as UTF-8 and fails with an opaque decode error on anything else.
+    try:
+        path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{path.name} is not UTF-8 text; convert it first, "
+                         "e.g. iconv -f SHIFT_JIS -t UTF-8 IN > OUT") from None
+    srt = run_tool(["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "srt", "-"])
+    return parse_srt(srt.decode("utf-8", errors="replace"))
+
+
+def subtitle_files_beside(video: Path) -> list[Path]:
+    """Subtitle files named after the video, such as EP01.srt or EP01.en.ass next to EP01.mp4."""
+    return sorted(p for p in video.parent.iterdir()
+                  if p.name.startswith(f"{video.stem}.") and p.suffix.lower() in SUBTITLE_FILE_SUFFIXES
+                  and p.is_file())
+
+
 def overlapping(lines: Sequence[Line], start: float, end: float) -> list[Line]:
     return [line for line in lines if line["start"] < end and line["end"] > start]
 
@@ -556,7 +578,10 @@ def main() -> None:
     ap.add_argument("--whisper-model", default="small")
     ap.add_argument("--lang", help="language code; default auto-detect")
     ap.add_argument("--audio-stream", type=int, default=0, help="audio stream to transcribe (0:a:N)")
-    ap.add_argument("--subs-stream", type=int, help="text subtitle stream to add as subtitles (0:s:N)")
+    subs_source = ap.add_mutually_exclusive_group()
+    subs_source.add_argument("--subs-stream", type=int, help="text subtitle stream to add as subtitles (0:s:N)")
+    subs_source.add_argument("--subs", type=Path, metavar="FILE",
+                             help="SRT, ASS/SSA or WebVTT file, timed to the video, to add as subtitles")
     ap.add_argument("--transcribe", action=argparse.BooleanOptionalAction, default=True,
                     help="transcribe dialogue with Whisper")
     ap.add_argument("--vad", action=argparse.BooleanOptionalAction, default=True,
@@ -583,10 +608,21 @@ def main() -> None:
     subs_stream = pick_stream(subs, a.subs_stream, "s", "--subs-stream") if a.subs_stream is not None else None
     if audio_stream is not None:
         print(f"dialogue from {describe(audio_stream, 'a')} ({len(audio)} audio streams)", flush=True)
-    text_subs = [s for s in subs if s["codec"] in TEXT_SUBTITLE_CODECS]
-    if subs_stream is None and text_subs:
-        print("text subtitles available: " + "; ".join(describe(s, "s") for s in text_subs)
-              + ". Pass --subs-stream N to add them.", flush=True)
+    file_subs: list[Line] | None = None
+    if a.subs is not None:
+        try:
+            file_subs = read_subtitle_file(a.subs.resolve())
+        except (OSError, ValueError, RuntimeError) as e:
+            ap.error(f"--subs: {e}")
+        print(f"subtitles: {len(file_subs)} cues from {a.subs.name}", flush=True)
+    elif subs_stream is None:
+        text_subs = [s for s in subs if s["codec"] in TEXT_SUBTITLE_CODECS]
+        if text_subs:
+            print("text subtitles available: " + "; ".join(describe(s, "s") for s in text_subs)
+                  + ". Pass --subs-stream N to add them.", flush=True)
+        if beside := subtitle_files_beside(video):
+            print("subtitle files beside the video: " + "; ".join(p.name for p in beside)
+                  + ". Pass --subs FILE to add one.", flush=True)
 
     out.mkdir(parents=True, exist_ok=True)
     cache = out / "cache"
@@ -674,7 +710,7 @@ def main() -> None:
         transcript = transcript_job.result()
     background.shutdown()
     dialogue = transcript["segments"] if transcript is not None else None
-    subtitles = None
+    subtitles = file_subs
     if subs_stream is not None:
         subtitles_sig = {**source, "subs_stream": subs_stream["index"], "version": SUBTITLES_VERSION}
         subtitles = cast("list[Line] | None", cached(cache / "subtitles.json", subtitles_sig))

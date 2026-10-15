@@ -15,7 +15,7 @@ Writes `scenes.json` and `scene_0004_005.90s.jpg`-style stills. Omit `--sample` 
 python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
-Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, in the background while shots are detected and captioned, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
+Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, in the background while shots are detected and captioned, and can add text subtitles from the video or a subtitle file. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
 
 ### Captioners
 
@@ -80,7 +80,9 @@ Reply filenames include a hash of the sheet's cache signature, so a reply writte
 
 ### Dialogue
 
-The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks another. Films often carry several tracks, and reference edits often use the English dub. Index prints the audio streams with language and title tags, and lists any text subtitle streams it finds. `--subs-stream N` adds that subtitle stream (`0:s:N`: SRT, ASS/SSA, mov_text or WebVTT) to each shot as `subtitles`. Image subtitles (PGS, VobSub) can't be read. `--no-transcribe` skips Whisper, for subtitles instead of a transcript or for a video without audio.
+The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks another. Films often carry several tracks, and reference edits often use the English dub. Index prints the audio streams with language and title tags, and lists any text subtitle streams it finds. `--subs-stream N` adds that subtitle stream (`0:s:N`: SRT, ASS/SSA, mov_text or WebVTT) to each shot as `subtitles`. Image subtitles (PGS, VobSub) can't be read.
+
+`--subs FILE` adds a subtitle file instead: SRT, ASS/SSA or WebVTT, in UTF-8. Index lists subtitle files named after the video that sit beside it, such as `EP01.srt` or `EP01.en.ass` next to `EP01.mp4`. A file made for a different release of the video can be offset by a recap, an intro or a different cut, so check a few cues against `dialogue` before relying on its times. `--no-transcribe` skips Whisper, for subtitles instead of a transcript or for a video without audio.
 
 Whisper runs with voice-activity detection by default, which keeps it from inventing lines over music and silence. On edits, where dialogue is mixed under a song, it can drop every line: on the White Light reference edit it removed both. Use `--no-vad` there.
 
@@ -99,13 +101,13 @@ An array of shots. Times are seconds relative to the input video, and still path
 | `flashes` | `[{time, frames}]` bright flashes |
 | `look` | `{luma, hue, saturation, palette}` for matching color grades |
 | `dialogue` | Whisper segments overlapping the shot: `{start, end, text, words: [{start, end, word}]}`. Absent with `--no-transcribe` |
-| `subtitles` | Subtitle cues overlapping the shot: `{start, end, text}`. Only with `--subs-stream` |
+| `subtitles` | Subtitle cues overlapping the shot: `{start, end, text}`. Only with `--subs-stream` or `--subs` |
 
 A line spanning a cut appears in both shots; its word times show which words fall in which. Word text is as Whisper emits it, including the leading space, so joining the words rebuilds the line. Captions and transcription are machine-generated, not verified subtitles. Subtitles converted from ASS keep typeset signs as cues, though vector drawings are dropped.
 
 ### Caching
 
-Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
+Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. A subtitle file is read again on every run. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
 
 ## Render
 ```sh
