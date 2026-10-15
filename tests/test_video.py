@@ -211,7 +211,8 @@ class SyntheticVideoTests(unittest.TestCase):
         fake.CredentialsError = CredentialsError  # type: ignore[attr-defined]
 
         def run(*args: str) -> list[Any]:
-            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", *args]
+            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", "--captioner", "api",
+                    *args]
             with mock.patch.object(sys, "argv", argv), mock.patch.dict(sys.modules, {"anthropic": fake}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 index.main()
@@ -228,7 +229,7 @@ class SyntheticVideoTests(unittest.TestCase):
         for client in (no_credentials, Keyless):
             with mock.patch.object(fake, "Anthropic", client), self.assertRaises(SystemExit) as raised:
                 run()
-            self.assertIn("--captioner agent", str(raised.exception))
+            self.assertIn("--captioner claude", str(raised.exception))
         self.assertEqual(calls, [])
 
         shots = run("--subs-stream", "0")
@@ -265,6 +266,91 @@ class SyntheticVideoTests(unittest.TestCase):
         run("--context", str(context), "--sheet-size", "3")
         self.assertEqual(len(calls), 7)
         self.assertEqual([p.name for p in (out / "sheets").iterdir()], ["sheet_0001.jpg"], "stale sheets removed")
+
+    def test_index_claude_captioner(self) -> None:
+        """The default captioner: one `claude -p` per sheet with the pinned model, sharing the API's cache."""
+        out, bin_dir, log = self.root / "claude", self.root / "bin", self.root / "claude-calls.jsonl"
+        bin_dir.mkdir(exist_ok=True)
+        # A stand-in for Claude Code: logs its arguments, input and auth env, and answers in stream-json.
+        fake = bin_dir / "claude"
+        fake.write_text(f"""#!{sys.executable}
+import json, os, sys
+args, stdin = sys.argv[1:], sys.stdin.read()
+request = json.loads(stdin)["message"]["content"]
+ids = [int(i) for i in request[1]["text"].split(":")[1].split(",")]
+with open({str(log)!r}, "a") as f:
+    f.write(json.dumps({{"args": args, "image": request[0]["type"], "ids": ids,
+                        "api_key": "ANTHROPIC_API_KEY" in os.environ}}) + "\\n")
+model = args[args.index("--model") + 1]
+print(json.dumps({{"type": "system", "subtype": "init"}}))
+print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "modelUsage": {{model: {{}}}},
+                  "structured_output": {{"shots": [{{"id": i, "caption": f"cli shot {{i}}", "characters": []}}
+                                                  for i in ids]}}}}))
+""")
+        fake.chmod(0o755)
+
+        def run(*args: str) -> list[Any]:
+            argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", *args]
+            path = f"{bin_dir}:{index.os.environ['PATH']}"
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict("os.environ", {"PATH": path, "ANTHROPIC_API_KEY": "should-not-be-used"}):
+                index.main()
+            return json.loads((out / "shots.json").read_text())  # type: ignore[no-any-return]
+
+        def calls() -> list[dict[str, Any]]:
+            return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+        shots = run("--title", "Test Pattern")
+        self.assertEqual([s["caption"] for s in shots], ["cli shot 1", "cli shot 2", "cli shot 3"])
+        self.assertEqual(sorted(c["ids"] for c in calls()), [[1, 2], [3]], "sheets are captioned in parallel")
+        first = next(c for c in calls() if c["ids"] == [1, 2])
+        self.assertEqual(first["image"], "image")
+        self.assertFalse(first["api_key"], "the sign-in is used, not an API key")
+        args = first["args"]
+        self.assertEqual(args[args.index("--model") + 1], "claude-haiku-5-5")
+        self.assertIn("The video is from Test Pattern.", args[args.index("--system-prompt") + 1])
+        self.assertEqual(args[args.index("--tools") + 1], "")
+        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), index.CAPTION_SCHEMA)
+
+        def no_api(**_: Any) -> None:
+            raise AssertionError("the API should not be called")
+
+        api = ModuleType("anthropic")
+        api.Anthropic = no_api  # type: ignore[attr-defined]
+        with mock.patch.dict(sys.modules, {"anthropic": api}):
+            self.assertEqual(run("--captioner", "api", "--title", "Test Pattern"), shots,
+                             "the API and claude -p share captions for the same model")
+        self.assertEqual(len(calls()), 2)
+
+    def test_claude_captioner_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sheet = Path(tmp) / "sheet.jpg"
+            sheet.write_bytes(b"image")
+
+            def reply(*events: dict[str, Any], returncode: int = 0) -> Any:
+                stdout = "\n".join(json.dumps(e) for e in events)
+                return mock.patch.object(index.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], returncode, stdout=stdout, stderr="Not logged in"))
+
+            good = {"shots": [{"id": 1, "caption": "x", "characters": []}]}
+            with reply({"type": "result", "subtype": "success", "modelUsage": {"claude-opus-4-6": {}},
+                        "structured_output": good}), self.assertRaises(RuntimeError) as raised:
+                index.caption_sheet_cli([{"i": 1}], sheet, "claude-haiku-5-5")
+            self.assertIn("claude-opus-4-6 instead of claude-haiku-5-5", str(raised.exception))
+
+            with reply(returncode=1), self.assertRaises(RuntimeError) as raised:
+                index.caption_sheet_cli([{"i": 1}], sheet, "claude-haiku-5-5")
+            self.assertIn("Not logged in", str(raised.exception))
+
+            with reply({"type": "result", "subtype": "error_during_execution", "is_error": True}) as run, \
+                    mock.patch.object(index.time, "sleep"), self.assertRaises(ValueError):
+                index.caption_sheet_cli([{"i": 1}], sheet, "claude-haiku-5-5")
+            self.assertEqual(run.call_count, index.CAPTION_ATTEMPTS)
+
+            with reply({"type": "result", "subtype": "success", "modelUsage": {"claude-haiku-5-5": {}},
+                        "structured_output": good}):
+                self.assertEqual(index.caption_sheet_cli([{"i": 1}], sheet, "claude-haiku-5-5"),
+                                 {"1": {"caption": "x", "characters": []}})
 
     def test_index_agent_captioner(self) -> None:
         """--captioner agent: a jobs file, replies validated on rerun, shots.json once every sheet is captioned."""
