@@ -4,11 +4,10 @@ A harness for seeing how well a model can make short (15–40 s) TikTok-style an
 
 ## The bar
 
-Read `breakdowns/` before planning, starting with [denreze-white-light.md](breakdowns/denreze-white-light.md). That edit is the bar. It sets a song about a dangerous first high against a first love who is literally a bomb. The drop lands on a detonation that turns into a kiss, and every cut carries meaning. The breakdowns show depth; they aren't templates. Don't reuse their moves; find the ones this song and this story call for.
+Read [breakdowns/denreze-white-light.md](breakdowns/denreze-white-light.md) before planning. It takes apart an edit the user loves: what the song is about, which scenes the editor picked, and what those scenes mean in the story. It shows the level of thought the user responds to. It isn't a structure to follow; your edit should come from what this song and this story are about.
 
 What the user responds to:
 - **One idea where the song meets the story**, with the edit built around it.
-- **A reason behind every cut** that you can say out loud.
 - **Something true about the characters** that a fan would recognize, and ideally notice more of on a rewatch.
 - **Craft that serves the idea:** timing, flow and look.
 
@@ -19,7 +18,7 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 How you research, plan and build is up to you. Two things are not:
 
 1. **Pitch before building.** Once you know the song and the source well, pitch 2–3 genuinely different concepts. Each one is a sentence on where the song meets the story, the stretch of song you'd use, and the moment or image pair the edit hinges on. Then wait for the user to pick or redirect.
-2. **Watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm every cut lands where you meant it to and every `why` still holds. Revise until they do.
+2. **Watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to and the edit says what you meant it to. Revise until it does.
 
 Research the show and the song as deeply as the edit needs; subagents work well for this. Research on a show's cast can double as `index.py --context`; the format is in [docs/pipeline.md](docs/pipeline.md#captions).
 
@@ -66,7 +65,7 @@ Things you can't see from the code:
 - `media/`: songs and source video. `out/<edit-name>/`: everything a run produces (research notes, indexes, song map, EDL, renders). Both are gitignored. Never commit media.
 - `breakdowns/`: dissected reference edits, the taste reference.
 - For each finished edit, keep in `out/<edit-name>/`:
-  - `edl.json`, where every cut has its `why` and `sync`
+  - `edl.json`
   - the render
   - a short `notes.md` with the pitch the user chose and what you'd change next time
 

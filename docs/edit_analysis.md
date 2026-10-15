@@ -1,6 +1,6 @@
 # Edit analysis
 
-How `scene_frames/analyze_edit.py` turns a short reference edit (15–40 s) into the measured timeline a breakdown is written from: the skeleton and the cut-by-cut table in `breakdowns/`. Given a song file instead, it maps the audio alone, so an agent can plan a new edit on it.
+How `scene_frames/analyze_edit.py` turns a short reference edit (15–40 s) into the measured timeline a breakdown is written from: the timings and the cut-by-cut table in `breakdowns/`. Given a song file instead, it maps the audio alone, so an agent can plan a new edit on it.
 
 ## Usage
 

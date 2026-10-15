@@ -75,8 +75,8 @@ RETIME_EDL: dict[str, Any] = {
                        {"t": 0.5, "speed": 1, "ease": "hold"}]},
         {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 2.0, "timeline_out": 2.5, "sync": "free",
          "why": "blend", "speed": 0.5, "slowmo": "blend"},
-        {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 2.5, "timeline_out": 3.0, "sync": "free",
-         "why": "motion", "speed": 0.5, "slowmo": "motion"},
+        {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 2.5, "timeline_out": 3.0,
+         "speed": 0.5, "slowmo": "motion"},
         {"source": "box.mp4", "src_in": 0.0, "timeline_in": 3.0, "timeline_out": 4.0, "sync": "motion",
          "why": "punch", "shake_hz": 10,
          "keyframes": [{"t": 0.0, "zoom": 2.0, "shake": 0.04}, {"t": 0.5, "zoom": 1.0, "shake": 0.0, "ease": "out"}]},
@@ -341,6 +341,8 @@ class RetimeTests(unittest.TestCase):
         self.assertIn("| 1 | 0.000–1.000 | 24 | ramp.mp4 | 0.250–1.500 | ramp 0.5–2× | cut | beat | ramp |", table)
         self.assertIn("| freeze |", table)
         self.assertIn("1×, keys zoom/shake", table)
+        (unannotated,) = [row for row in table.splitlines() if row.startswith("| 5 |")]
+        self.assertTrue(unannotated.endswith("| cut |  |  |"), unannotated)
 
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
@@ -353,16 +355,16 @@ class EdlValidationTests(unittest.TestCase):
         self.assertEqual([c.sync for c in edl.clips], ["free", "drop", "beat", "phrase_end"])
         self.assertEqual(edl.clips[1].why, "White flash into green on the drop.")
 
-    def test_reasoning_is_required(self) -> None:
+    def test_reasoning_is_optional(self) -> None:
         edl = copy.deepcopy(EDL)
         del edl["clips"][0]["why"]
+        del edl["clips"][0]["sync"]
+        clip = parse_edl(edl).clips[0]
+        self.assertIsNone(clip.sync)
+        self.assertIsNone(clip.why)
         edl["clips"][1]["sync"] = "vibes"
-        problems = self.problems(edl)
-        self.assertIn("clips[0].why: required", problems)
-        self.assertIn('clips[1].sync: must be one of beat, drop, word, phrase_end, motion, free, got "vibes"', problems)
-        edl = copy.deepcopy(EDL)
-        edl["clips"][2]["why"] = "  "
-        self.assertIn("clips[2].why: must say what the cut means and why it is here", self.problems(edl))
+        self.assertIn('clips[1].sync: must be one of beat, drop, word, phrase_end, motion, free, got "vibes"',
+                      self.problems(edl))
 
     def test_unknown_field_suggests_fix(self) -> None:
         edl = copy.deepcopy(EDL)

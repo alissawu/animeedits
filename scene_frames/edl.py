@@ -20,9 +20,9 @@ are errors, so typos never pass silently.
             no timeline_out (constant speed only). With both, src_out must match where the
             speed has carried the source by timeline_out; leave it out and it is derived
             (--check prints it, edl_table.md shows it). speed 0 freezes on src_in.
-            sync: what the cut lands on: beat, drop, word, phrase_end, motion or free.
-            why: what the cut means and why it is here. The renderer does not interpret
-            sync or why; edl_table.md and proof.jpg show them for critique.
+            sync and why are optional notes for critique: sync is what the cut lands on
+            (beat, drop, word, phrase_end, motion or free), why is free text. The renderer
+            does not interpret them; edl_table.md and proof.jpg show them.
             crop {zoom=1, x=0.5, y=0.5}: the largest window of the output's aspect ratio,
             divided by zoom (>= 1), centred on the source point (x, y) as fractions of
             width and height, kept inside the frame.
@@ -167,10 +167,10 @@ class Clip:
     source: str
     src_in: float
     timeline_in: float
-    sync: Sync
-    why: str
     timeline_out: float | None = None
     src_out: float | None = None
+    sync: Sync | None = None
+    why: str | None = None
     speed: float = 1.0
     reverse: bool = False
     slowmo: SlowMo = "repeat"
@@ -506,7 +506,6 @@ def check(edl: Edl) -> list[str]:
         need(clip.timeline_in >= 0, f"{path}.timeline_in", f"must be >= 0, got {clip.timeline_in:g}")
         within(clip.speed, 0, 20, f"{path}.speed")
         within(clip.shake_hz, 0.1, 60, f"{path}.shake_hz")
-        need(clip.why.strip() != "", f"{path}.why", "must say what the cut means and why it is here")
         framing(clip.crop.zoom, clip.crop.x, clip.crop.y, f"{path}.crop")
         within(clip.color.brightness, -1, 1, f"{path}.color.brightness")
         within(clip.color.contrast, 0, 3, f"{path}.color.contrast")

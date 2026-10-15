@@ -704,7 +704,7 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
             lines.append(f"| | {span(cursor, a)} | {a - cursor} | black | | | | | |")
         lines.append(f"| {i + 1} | {span(a, b)} | {b - a} | {_cell(clip.source)} | "
                      f"{clip.src_in:.3f}–{source_end(clip, fps):.3f} | {_motion(clip)} | {_transition(clip)} | "
-                     f"{clip.sync} | {_cell(clip.why)} |")
+                     f"{clip.sync or ''} | {_cell(clip.why or '')} |")
         cursor = b
     if cursor < total:
         lines.append(f"| | {span(cursor, total)} | {total - cursor} | black | | | | | |")
@@ -757,9 +757,10 @@ def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path) -> None:
         shots: list[tuple[int | None, str]] = [(a - 1 if a > 0 else None, "before"), (a, "cut")]
         if t.type != "cut":
             shots.append((a + t.frames, f"after {t.type}"))
-        title = (f"#{i + 1} · {a / fps:.3f} s · frame {a} · sync {clip.sync} · {_transition(clip)} · "
+        sync = f"sync {clip.sync} · " if clip.sync else ""
+        title = (f"#{i + 1} · {a / fps:.3f} s · frame {a} · {sync}{_transition(clip)} · "
                  f"{Path(clip.source).name} {clip.src_in:.3f}–{source_end(clip, fps):.3f} s · {_motion(clip)}")
-        rows.append((shots, title, clip.why))
+        rows.append((shots, title, clip.why or ""))
         nxt = clip_frames(edl.clips[i + 1], fps)[0] if i + 1 < len(edl.clips) else total
         if b < nxt:
             rows.append(([(b - 1, "before"), (b, "black")], f"black · {b / fps:.3f}–{nxt / fps:.3f} s · frame {b}",
