@@ -35,13 +35,14 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 
 # Only the light modules load up front: index.py brings in scenedetect and OpenCV, which only `try` needs.
 try:
-    from cast_notes import canonical_characters, cast_names, name_key, read_context
+    from cast_notes import Names, canonical_characters, cast_names, name_key, read_context
 except ImportError:  # imported as scene_frames.show
-    from .cast_notes import (canonical_characters, cast_names,  # type: ignore[import-not-found,no-redef]
-                             name_key, read_context)
+    from .cast_notes import (Names, canonical_characters,  # type: ignore[import-not-found,no-redef]
+                             cast_names, name_key, read_context)
 
 if TYPE_CHECKING:
     from index import IndexedShot
+    from story import StoryScene
 
 MANIFEST = "show.toml"
 HERE = Path(__file__).resolve().parent
@@ -285,22 +286,23 @@ def finish(video: Video, out_root: Path) -> Outcome:
         return Outcome(video, False, lines=lines)
     lines += video_report(video, out)
     story_ok, story_lines = result_lines("story.py", run_logged(story_command(video, out), log), log)
-    return Outcome(video, story_ok, lines=lines + story_lines)
+    return Outcome(video, story_ok, lines=lines + story_lines + (story_corrections(out) if story_ok else []))
 
 
-def mentioned(name: str, names: Sequence[str], synopsis: str) -> bool:
-    """Whether the synopsis mentions a name, in full or by a word of it that no other cast name has, such as
-    "Gojo" for Satoru Gojo but not "Fushiguro" when the notes have two. synopsis is a name_key of the text."""
-    key = name_key(name)
+def mentioned(name: str, names: Names, synopsis: str) -> bool:
+    """Whether the synopsis mentions a character, by one of their names or aliases in full, or by a word of one that
+    no other character's has, such as "Gojo" for Satoru Gojo but not "Fushiguro" when the notes have two.
+    synopsis is a name_key of the text."""
+    own = [name_key(n) for n, who in names.items() if who == name] or [name_key(name)]
     padded = f" {synopsis} "
-    if not key or f" {key} " in padded:
-        return bool(key)
-    others = {word for n in names if name_key(n) != key for word in name_key(n).split()}
+    if any(key and f" {key} " in padded for key in own):
+        return True
+    others = {word for n, who in names.items() if who != name for word in name_key(n).split()}
     words = set(synopsis.split())
-    return any(word in words for word in key.split() if len(word) > 2 and word not in others)
+    return any(word in words for key in own for word in key.split() if len(word) > 2 and word not in others)
 
 
-def name_report(shots: Sequence[IndexedShot], names: Sequence[str], synopsis: str) -> list[NameCount]:
+def name_report(shots: Sequence[IndexedShot], names: Names, synopsis: str) -> list[NameCount]:
     """How many shots name each character, most named first, and whether the cast notes and synopsis know them."""
     count: Counter[str] = Counter()
     unsure: Counter[str] = Counter()
@@ -315,12 +317,13 @@ def name_report(shots: Sequence[IndexedShot], names: Sequence[str], synopsis: st
             for name, n in sorted(count.items(), key=lambda item: (-item[1], item[0]))]
 
 
+def wrapped(heading: str, items: Sequence[str]) -> list[str]:
+    return textwrap.wrap(f"{heading}: {', '.join(items)}", WRAP, subsequent_indent="    ")
+
+
 def report_lines(report: Sequence[NameCount], shots: int) -> list[str]:
     def label(c: NameCount) -> str:
         return f'{c["name"]} {c["shots"]}' + (f' ({c["unsure"]} possibly)' if c["unsure"] else "")
-
-    def wrapped(heading: str, items: Sequence[str]) -> list[str]:
-        return textwrap.wrap(f"{heading}: {', '.join(items)}", WRAP, subsequent_indent="    ")
 
     named = [label(c) for c in report]
     lines = wrapped(f"names in the captions of {shots} shots", named or ["none"])
@@ -340,6 +343,25 @@ def video_report(video: Video, out: Path) -> list[str]:
     except (OSError, ValueError) as e:
         return [f"no name report: {e}"]
     return report_lines(name_report(shots, cast_names(cast), synopsis), len(shots))
+
+
+def story_corrections(out: Path) -> list[str]:
+    """What the story pass changed in a finished index: each swap of names, with how many shots it changed, most
+    first. A swap to someone the cast notes don't have usually means they're missing from the notes."""
+    try:
+        story: list[StoryScene] = json.loads((out / "story.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return [f"no story corrections: {e}"]
+    swaps: Counter[str] = Counter()
+    for scene in story:
+        for shot in scene.get("shots", []):
+            if "caption_characters" in shot:
+                before = [c["name"] for c in shot["caption_characters"]]
+                after = [c["name"] for c in shot["characters"]]
+                removed = ", ".join(n for n in before if n not in after)
+                added = ", ".join(n for n in after if n not in before) or "nobody"
+                swaps[f"{removed} → {added}"] += 1
+    return wrapped("story corrections", [f"{swap} {n}" for swap, n in swaps.most_common()]) if swaps else []
 
 
 def try_notes(video: Video, out: Path, sheets: Sequence[int]) -> list[str]:
@@ -470,7 +492,7 @@ def main() -> None:
     if a.command == "report":
         for v in videos:
             print(f"\n{v.name}  ({v.group.name})")
-            for line in video_report(v, out / v.name):
+            for line in video_report(v, out / v.name) + story_corrections(out / v.name):
                 print(f"  {line}")
         return
 

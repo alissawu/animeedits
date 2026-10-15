@@ -206,14 +206,18 @@ videos = []
 
 
 class NameReportTests(unittest.TestCase):
-    NAMES = ["Mira Sato", "Tomo Fushiguro", "Rin Fushiguro", "Angel Devil", "Typhoon Devil"]
+    NAMES = {**{n: n for n in ("Mira Sato", "Tomo Fushiguro", "Rin Fushiguro", "Angel Devil", "Typhoon Devil",
+                                "Café owner")}, "Master": "Café owner"}
 
     def test_mentioned(self) -> None:
         synopsis = show.name_key("Tomo finds the Angel Devil. Mrs. Fushiguro waits; Mira-san's sister calls.")
         for name, expected in {"Tomo Fushiguro": True, "Rin Fushiguro": False, "Angel Devil": True,
-                               "Typhoon Devil": False, "Mira Sato": True, "Bayer": False, "Mira": True}.items():
+                               "Typhoon Devil": False, "Mira Sato": True, "Bayer": False, "Mira": True,
+                               "Café owner": False}.items():
             with self.subTest(name):
                 self.assertEqual(show.mentioned(name, self.NAMES, synopsis), expected)
+        self.assertTrue(show.mentioned("Café owner", self.NAMES, show.name_key("The master pours coffee.")),
+                        "by an alias")
 
     def test_report(self) -> None:
         shots: list[Any] = [
@@ -233,6 +237,23 @@ class NameReportTests(unittest.TestCase):
             "not in the synopsis: Rin Fushiguro 1",
         ])
         self.assertEqual(show.report_lines([], 3), ["names in the captions of 3 shots: none"])
+
+    def test_story_corrections(self) -> None:
+        def shot(i: int, caption: list[str], corrected: list[str]) -> dict[str, Any]:
+            entry: dict[str, Any] = {"id": i, "characters": [{"name": n, "certain": False} for n in corrected]}
+            if caption != corrected:
+                entry["caption_characters"] = [{"name": n, "certain": True} for n in caption]
+            return entry
+        story = [{"shots": [shot(1, ["Makima", "Aki"], ["Angel Devil", "Aki"]), shot(2, ["Makima"], ["Angel Devil"]),
+                            shot(3, ["Reze"], []), shot(4, ["Denji"], ["Denji"])]}, {"id": 2}]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertTrue(show.story_corrections(out)[0].startswith("no story corrections:"))
+            (out / "story.json").write_text(json.dumps(story))
+            self.assertEqual(show.story_corrections(out),
+                             ["story corrections: Makima → Angel Devil 2, Reze → nobody 1"])
+            (out / "story.json").write_text(json.dumps([{"shots": [shot(1, ["Denji"], ["Denji"])]}]))
+            self.assertEqual(show.story_corrections(out), [])
 
 
 class CommandTests(ShowTestCase):

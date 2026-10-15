@@ -5,7 +5,7 @@ captions should use. See docs/indexing.md#recipe-cast-notes for how to write the
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 import re
 from typing import TypedDict
@@ -13,7 +13,10 @@ import unicodedata
 
 HEADING = re.compile(r"(#{1,2})\s+(.+?)[\s#]*")  # markdown # and ## headings
 CAST_HEADING = re.compile(r"###\s+(.+?)[\s#]*")
-PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")  # "Kenjaku (in Suguru Geto's body)" names Kenjaku
+PARENTHETICAL = re.compile(r"\s*\(([^()]*)\)\s*$")  # "Kenjaku (in Suguru Geto's body)", "Café owner (Master)"
+PARTICLES = frozenset({"of", "the", "no", "and", "de", "da", "van", "von", "le", "la"})
+
+Names = Mapping[str, str]  # every name and alias the cast notes give a character, to the name captions use
 
 
 class Character(TypedDict):
@@ -39,18 +42,36 @@ def read_context(path: Path) -> tuple[str | None, str]:
             cast = []
     section = "\n".join(cast or []).strip()
     if not section:
-        raise ValueError(f"{path} has no '## Cast' section; see docs/pipeline.md for the format")
+        raise ValueError(f"{path} has no '## Cast' section; docs/indexing.md#recipe-cast-notes has the format")
     return title, section
 
 
-def cast_names(cast: str) -> list[str]:
-    """The name of each `### ` entry in a cast section, without a trailing (parenthetical)."""
-    names: list[str] = []
+def aliases(parenthetical: str) -> list[str]:
+    """The other names a heading's parenthetical gives: its parts, split at / or a comma, that are written as names,
+    every word capitalized but particles like "of" ("Master", "Granny Ogami", "Queen of Curses"). A part in lowercase,
+    like "in Suguru Geto's body", is a note."""
+    found: list[str] = []
+    for part in re.split(r"[/,]", parenthetical):
+        words = part.strip().strip('"“”').split()
+        if words and words[0][:1].isupper() and all(w[:1].isupper() or w in PARTICLES for w in words):
+            found.append(" ".join(words))
+    return found
+
+
+def cast_names(cast: str) -> dict[str, str]:
+    """Each `### ` entry's name and aliases, to its name: the heading without a trailing (parenthetical), whose parts
+    written as names are aliases. `### Café owner (Master)` gives {"Café owner": "Café owner", "Master": "Café owner"},
+    and `### Kenjaku (in Suguru Geto's body)` gives {"Kenjaku": "Kenjaku"}."""
+    names: dict[str, str] = {}
     for line in cast.splitlines():
         if heading := CAST_HEADING.fullmatch(line.strip()):
-            name = PARENTHETICAL.sub("", heading[1]).strip() or heading[1]
-            if name not in names:
-                names.append(name)
+            note = PARENTHETICAL.search(heading[1])
+            name = heading[1][:note.start()].strip() if note else heading[1]
+            if not name:
+                name, note = heading[1], None
+            names.setdefault(name, name)
+            for alias in aliases(note[1]) if note else []:
+                names.setdefault(alias, name)
     return names
 
 
@@ -61,21 +82,22 @@ def name_key(name: str) -> str:
     return " ".join(re.sub(r"\W+", " ", re.sub(r"['’`]", "", text)).split())
 
 
-def canonical_name(name: str, names: Sequence[str]) -> str:
-    """The cast notes' spelling of a caption's name. A name matches a cast name with the same key, or else the one
-    cast name whose words include all of its words, so "Gojo" and "Gojo Satoru" become "Satoru Gojo" while
-    "Fushiguro" stays as it is when the notes have two. A trailing (parenthetical) is ignored. Other names are kept."""
+def canonical_name(name: str, names: Names) -> str:
+    """The cast notes' spelling of a caption's name. A name matches a cast name or alias with the same key, or else the
+    one character with a name or alias whose words include all of its words, so "Gojo" and "Gojo Satoru" become
+    "Satoru Gojo" while "Fushiguro" stays as it is when the notes have two. A trailing (parenthetical) is ignored.
+    Other names are kept."""
     for candidate in (PARENTHETICAL.sub("", name), name):
         key = name_key(candidate)
         if not key:
             continue
-        exact = [n for n in names if name_key(n) == key]
-        if exact:
-            return exact[0]
+        exact = {names[n] for n in names if name_key(n) == key}
+        if len(exact) == 1:
+            return exact.pop()
         words = set(key.split())
-        partial = [n for n in names if words <= set(name_key(n).split())]
+        partial = {names[n] for n in names if words <= set(name_key(n).split())}
         if len(partial) == 1:
-            return partial[0]
+            return partial.pop()
     return name
 
 
@@ -90,6 +112,6 @@ def merge_characters(characters: Sequence[Character]) -> list[Character]:
     return list(merged.values())
 
 
-def canonical_characters(characters: Sequence[Character], names: Sequence[str]) -> list[Character]:
+def canonical_characters(characters: Sequence[Character], names: Names) -> list[Character]:
     return merge_characters([Character(name=canonical_name(c["name"], names), certain=c["certain"])
                              for c in characters])

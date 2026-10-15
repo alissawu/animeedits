@@ -30,12 +30,12 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 try:
-    from cast_notes import Character, canonical_characters, cast_names, read_context
+    from cast_notes import Character, Names, canonical_characters, cast_names, read_context
     from detect import (FaceMode, Flash, Look, Motion, Shot, Still, add_detection_args, extract_frames,
                         positive_int)
 except ImportError:  # imported as scene_frames.index
-    from .cast_notes import (Character, canonical_characters,  # type: ignore[import-not-found,no-redef]
-                             cast_names, read_context)
+    from .cast_notes import (Character, Names,  # type: ignore[import-not-found,no-redef]
+                             canonical_characters, cast_names, read_context)
     from .detect import (FaceMode, Flash, Look, Motion, Shot, Still,  # type: ignore[import-not-found,no-redef]
                          add_detection_args, extract_frames, positive_int)
 
@@ -632,7 +632,7 @@ def overlapping(lines: Sequence[Line], start: float, end: float) -> list[Line]:
 
 
 def build_shots(rows: Sequence[Shot], captions: Mapping[str, Caption], dialogue: Sequence[Line] | None,
-                subtitles: Sequence[Line] | None, names: Sequence[str] = ()) -> list[IndexedShot]:
+                subtitles: Sequence[Line] | None, names: Names | None = None) -> list[IndexedShot]:
     """The index, with each caption's names in the cast notes' spelling (see canonical_name)."""
     shots: list[IndexedShot] = []
     for s in rows:
@@ -640,7 +640,7 @@ def build_shots(rows: Sequence[Shot], captions: Mapping[str, Caption], dialogue:
         shot = IndexedShot(id=s["i"], start=s["start"], end=s["end"],
                            keyframe=Still(time=round(s["best"], 3), file=s["file"]),
                            first_frame=s["first"], last_frame=s["last"], caption=caption["caption"],
-                           characters=canonical_characters(caption["characters"], names),
+                           characters=canonical_characters(caption["characters"], names or {}),
                            motion=s["motion"], flashes=s["flashes"], look=s["look"])
         if dialogue is not None:
             shot["dialogue"] = overlapping(dialogue, s["start"], s["end"])
@@ -824,7 +824,7 @@ def main() -> None:
         print(f"shots.json not written: waiting on captions for {len(pending)} sheets", flush=True)
         return
     (out / CAPTION_JOBS).unlink(missing_ok=True)
-    shots = build_shots(rows, captions, dialogue, subtitles, cast_names(cast_notes) if cast_notes else ())
+    shots = build_shots(rows, captions, dialogue, subtitles, cast_names(cast_notes) if cast_notes else None)
     save(out / "shots.json", shots)
     print(f'{len(shots)} shots -> {out / "shots.json"}')
 

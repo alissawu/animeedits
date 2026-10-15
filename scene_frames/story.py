@@ -16,11 +16,11 @@ import shutil
 from typing import Literal, NotRequired, TypedDict, cast
 
 try:
-    from cast_notes import Character, canonical_name, cast_names, merge_characters, name_key, read_context
+    from cast_notes import Character, Names, canonical_name, cast_names, merge_characters, name_key, read_context
     from detect import positive_int
     from index import POSSIBLY, IndexedShot, Line, cached, claude_cli, save, sha256, with_retries
 except ImportError:  # imported as scene_frames.story
-    from .cast_notes import (Character, canonical_name,  # type: ignore[import-not-found,no-redef]
+    from .cast_notes import (Character, Names, canonical_name,  # type: ignore[import-not-found,no-redef]
                              cast_names, merge_characters, name_key, read_context)
     from .detect import positive_int  # type: ignore[import-not-found,no-redef]
     from .index import (POSSIBLY, IndexedShot, Line, cached,  # type: ignore[import-not-found,no-redef]
@@ -265,7 +265,7 @@ def parse_scenes(text: str, group: Sequence[IndexedShot]) -> list[Scene]:
     return scenes
 
 
-def corrected_names(scene: Scene, members: Sequence[IndexedShot], names: Sequence[str]) -> list[ShotNames]:
+def corrected_names(scene: Scene, members: Sequence[IndexedShot], names: Names) -> list[ShotNames]:
     """Each shot's names with the scene's flags applied, in the cast notes' spelling.
 
     A flag replaces the name on its shot with who the person likely is, or drops it when nobody can tell. When the
@@ -305,7 +305,7 @@ def corrected_names(scene: Scene, members: Sequence[IndexedShot], names: Sequenc
     return result
 
 
-def tell_story(scenes: Sequence[Scene], shots: Sequence[IndexedShot], names: Sequence[str]) -> list[StoryScene]:
+def tell_story(scenes: Sequence[Scene], shots: Sequence[IndexedShot], names: Names) -> list[StoryScene]:
     """The scenes as story.json has them: names in the cast notes' spelling, and each shot's corrected names."""
     position = {s["id"]: k for k, s in enumerate(shots)}
     story: list[StoryScene] = []
@@ -408,7 +408,7 @@ def main() -> None:
                              a.model, a.chunk_size, cache)
     except (ValueError, RuntimeError) as e:
         raise SystemExit(f"{e}. Finished chunks are cached, so rerunning resumes.") from None
-    story = tell_story(scenes, shots, cast_names(cast_notes) if cast_notes else ())
+    story = tell_story(scenes, shots, cast_names(cast_notes) if cast_notes else {})
     save(out / "story.json", story)
     flags = sum(len(s["flags"]) for s in story)
     corrected = sum("caption_characters" in shot for s in story for shot in s["shots"])

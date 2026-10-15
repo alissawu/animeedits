@@ -119,7 +119,7 @@ def named(*names: str) -> list[dict[str, Any]]:
 
 
 class CorrectedNamesTests(unittest.TestCase):
-    NAMES = ["Mira Sato", "Rin Aoyama", "Tomo"]
+    NAMES = {"Mira Sato": "Mira Sato", "Rin Aoyama": "Rin Aoyama", "Tomo": "Tomo"}
 
     def scene(self, characters: list[str], *flags: tuple[int, str, str | None]) -> dict[str, Any]:
         return {"id": 1, "first_shot": 1, "last_shot": 4, "start": 0.0, "end": 8.0, "label": "x",

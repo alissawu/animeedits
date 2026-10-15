@@ -182,12 +182,26 @@ class CaptionTests(unittest.TestCase):
 class CastNameTests(unittest.TestCase):
     CAST = ("Setting: 2006.\n\n### Satoru Gojo\n- Hair: white\n### Suguru Geto\n- Hair: bun\n"
             "### Kenjaku (in Suguru Geto's body)\n- Hair: long\n### Toji Fushiguro\n### Megumi Fushiguro\n"
-            "### Maki Zen'in\n### Tamamo-no-Mae (Geto's curse)\n### Satoru Gojo\n")
+            "### Maki Zen'in\n### Tamamo-no-Mae (Geto's curse)\n### Satoru Gojo\n### Café owner (Master)\n"
+            "### Ogami (Granny Ogami / Ogami-baba, the medium)\n### Rika Orimoto (Queen of Curses)\n")
 
     def test_cast_names(self) -> None:
-        self.assertEqual(cast_notes.cast_names(self.CAST), ["Satoru Gojo", "Suguru Geto", "Kenjaku", "Toji Fushiguro",
-                                                       "Megumi Fushiguro", "Maki Zen'in", "Tamamo-no-Mae"])
-        self.assertEqual(cast_notes.cast_names("- Box: a white square"), [])
+        names = cast_notes.cast_names(self.CAST)
+        self.assertEqual(list(dict.fromkeys(names.values())), [
+            "Satoru Gojo", "Suguru Geto", "Kenjaku", "Toji Fushiguro", "Megumi Fushiguro", "Maki Zen'in",
+            "Tamamo-no-Mae", "Café owner", "Ogami", "Rika Orimoto"])
+        self.assertEqual({alias: name for alias, name in names.items() if alias != name},
+                         {"Master": "Café owner", "Granny Ogami": "Ogami", "Ogami-baba": "Ogami",
+                          "Queen of Curses": "Rika Orimoto"})
+        self.assertEqual(cast_notes.cast_names("- Box: a white square"), {})
+
+    def test_aliases(self) -> None:
+        self.assertEqual(cast_notes.aliases("Master"), ["Master"])
+        self.assertEqual(cast_notes.aliases('Star Religious Group / "Children of the Star"'),
+                         ["Star Religious Group", "Children of the Star"])
+        for note in ("in Suguru Geto's body", "Geto's curse", "believers", "the Master", ""):
+            with self.subTest(note):
+                self.assertEqual(cast_notes.aliases(note), [])
 
     def test_canonical_name(self) -> None:
         names = cast_notes.cast_names(self.CAST)
@@ -195,12 +209,16 @@ class CastNameTests(unittest.TestCase):
             "Satoru Gojo": "Satoru Gojo", "satoru  GOJO": "Satoru Gojo", "Gojo": "Satoru Gojo",
             "Gojo Satoru": "Satoru Gojo", "Satoru": "Satoru Gojo", "Geto": "Suguru Geto", "Kenjaku": "Kenjaku",
             "Maki Zenin": "Maki Zen'in", "Zenin": "Maki Zen'in", "Tamamo no Mae": "Tamamo-no-Mae",
-            "Gojō": "Satoru Gojo", "Gojo (child)": "Satoru Gojo", "Rika (cursed form)": "Rika (cursed form)",
+            "Gojō": "Satoru Gojo", "Gojo (child)": "Satoru Gojo", "Rika (cursed form)": "Rika Orimoto",
+            "Master": "Café owner", "Granny": "Ogami", "Queen of Curses": "Rika Orimoto",
+            "Riko (cursed form)": "Riko (cursed form)",
             "Fushiguro": "Fushiguro", "Yuji Itadori": "Yuji Itadori", "Young Gojo": "Young Gojo", "": "",
         }.items():
             with self.subTest(given):
                 self.assertEqual(cast_notes.canonical_name(given, names), expected)
-        self.assertEqual(cast_notes.canonical_name("Gojo", []), "Gojo")
+        self.assertEqual(cast_notes.canonical_name("Gojo", {}), "Gojo")
+        shared = {"Kid": "Toji", "Toji": "Toji", "KID": "Megumi", "Megumi": "Megumi"}
+        self.assertEqual(cast_notes.canonical_name("kid", shared), "kid", "an alias two characters share")
 
     def test_canonical_characters_merge(self) -> None:
         names = cast_notes.cast_names(self.CAST)
@@ -289,7 +307,7 @@ class DialogueTests(unittest.TestCase):
         self.assertNotIn("subtitles", shots[0])
         self.assertNotIn("dialogue", index.build_shots(rows, captions, None, [])[0])
         captions["1"]["characters"] = [{"name": "Mira", "certain": False}, {"name": "Mira Sato", "certain": True}]
-        named = index.build_shots(rows, captions, None, None, ["Mira Sato", "Tomo"])
+        named = index.build_shots(rows, captions, None, None, {"Mira Sato": "Mira Sato", "Tomo": "Tomo"})
         self.assertEqual(named[0]["characters"], [{"name": "Mira Sato", "certain": True}],
                          "names take the cast notes' spelling")
 
