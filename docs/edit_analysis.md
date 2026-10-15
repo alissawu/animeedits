@@ -1,19 +1,21 @@
 # Edit analysis
 
-How `scene_frames/analyze_edit.py` turns a short reference edit (15–40 s) into the measured timeline a breakdown is written from: the skeleton and the cut-by-cut table in `breakdowns/`.
+How `scene_frames/analyze_edit.py` turns a short reference edit (15–40 s) into the measured timeline a breakdown is written from: the skeleton and the cut-by-cut table in `breakdowns/`. Given a song file instead, it maps the audio alone, so an agent can plan a new edit on it.
 
 ## Usage
 
 ```sh
-python scene_frames/analyze_edit.py VIDEO OUT_DIR [--caption-band 0.75:1] [--no-words]
+python scene_frames/analyze_edit.py MEDIA OUT_DIR [--caption-band 0.75:1] [--no-words]
 ```
+
+MEDIA is a video, or an audio file such as mp3, wav, m4a or flac. Cover art in an audio file is not treated as video. For audio-only input, the visual stages are skipped and OUT_DIR gets `report.md` and `timeline.json` with the audio map, word timings and song sections.
 
 Requires ffmpeg on PATH and `requirements.txt`. Word timings use faster-whisper `small.en` (about 460 MB, downloaded on first use). Audio and video stay local.
 
 Writes to OUT_DIR:
 
 - `report.md`: the skeleton (tempo, drop, vocal phrases, pacing per section) and one row per shot, flash or stretch of black. Each row gives in/out, length, how the shot was entered, and the offset to the nearest beat, strong onset and word edge.
-- `timeline.json`: the same data for later stages: segments with frame numbers, in-shot events, dissolves, the audio map, word timings, phrases and sections.
+- `timeline.json`: the same data for later stages. `media` holds the probe. `picture` (null for audio) holds segments with frame numbers, in-shot events and dissolves. Then come `audio` (tempo, beats, strong onsets, loudness windows, `drops`, section `boundaries`), `words`, `phrases`, `sections`, `sheets` and `settings`.
 - `frames.json`: per-frame luma, white share, contrast, histogram distance, pixel difference, structure and edge distance, and the frame's label.
 - `sheets/shots_NN.jpg`: one keyframe per shot, labelled `S4 6.95-7.85s`.
 - `sheets/captions_NN.jpg`: the caption band every 0.25 s at up to 1280 px wide, so burned-in captions can be read. Use `--caption-band TOP:BOTTOM` (fractions of the frame height) to move or tighten it, and `--caption-step` to change the interval.
@@ -28,9 +30,10 @@ No lyric or dialogue text is written anywhere. Whisper's words are dropped as so
 4. **Short pieces.** A piece shorter than two frames becomes a flash if it is at least 40 luma brighter than both neighbours. Otherwise it joins the incoming shot. When a flash or black span separates it from the incoming shot, it joins whichever side it resembles.
 5. **In-shot events.** A flash or black span with the same shot on both sides is listed as an in-shot event, not a cut.
 6. **Dissolves.** Inside each shot, windows of ±0.1–0.4 s whose ends differ like a cut are fitted as a linear blend of their two end frames. A window passes when the blend residual is at most 0.35 of the distance to the nearer end and the mix only moves one way. The dissolve is the union of the blended frames of the passing windows that overlap the best one. It belongs to the incoming shot, which starts on its first blended frame.
-7. **Audio.** librosa gives the tempo and beat grid, and the onsets at or above the 90th percentile of onset strength. RMS and a 150 Hz low-pass are reported in dBFS per 0.25 s window. The drop is the largest loudness jump between the 0.25 s before and after a moment. The first 0.5 s and moments preceded by silence are skipped.
-8. **Words.** faster-whisper runs with `word_timestamps=True` and VAD off. Words closer than 1 s form a vocal phrase.
-9. **Report.** The edit is split into sections at phrase edges and the drop, each snapped to a shot boundary within 0.5 s. Every row is measured at its first frame; for a shot after a dissolve, that is the first blended frame. "On" means within 0.10 s. Events more than 1 s from a row are left out of the table but kept in `timeline.json`.
+7. **Audio.** librosa gives the tempo and beat grid, and the onsets at or above the 90th percentile of onset strength. RMS and a 150 Hz low-pass are reported in dBFS per 0.25 s window. A drop is a loudness jump between the 0.25 s before and after a moment. The biggest jump is the drop; any other jump of at least 6 dB and half the biggest, at least 4 s from it, is a drop too. The first 0.5 s and moments preceded by silence are skipped.
+8. **Audio sections.** Rough section boundaries come from a self-similarity matrix of beat-synchronous timbre (MFCC 1–12) and loudness. A checkerboard kernel is slid along its diagonal, with a half-width of a song's beats / 8, clamped to 4–16 beats. Peaks of at least 0.25 of the strongest, one kernel apart, are boundaries. Chroma was left out: on the reference edit it tracked chord changes rather than the drop.
+9. **Words.** faster-whisper runs with `word_timestamps=True` and VAD off. Words closer than 1 s form a vocal phrase.
+10. **Report.** A video is split into sections at phrase edges and drops, each snapped to a shot boundary within 0.5 s. A song is split at drops and audio boundaries at least 1 s from a drop. Its table gives each section's beats, vocal phrase or vocal share, loudness, low band, and whether it starts on a drop. Every row is measured at its first frame; for a shot after a dissolve, that is the first blended frame. "On" means within 0.10 s. Events more than 1 s from a row are left out of the table but kept in `timeline.json`.
 
 ## Design choices
 
@@ -54,8 +57,8 @@ On `denreze-whitelight.mov` the script finds the breakdown's 19 shots. Every har
 
 ## Caching
 
-Picture analysis, the audio map and word timings are cached in `OUT_DIR/cache/` with the same signature scheme as `index.py`: source path, size and mtime, the relevant options, and an analysis version. Rerunning reuses whatever still matches. Sheets and reports are rebuilt every run.
+Picture analysis, the audio map and word timings are cached in `OUT_DIR/cache/` with the same signature scheme as `index.py`: source path, size and mtime, the relevant options, and a version per stage. Rerunning reuses whatever still matches. Sheets and reports are rebuilt every run.
 
 ## Tests
 
-`tests/test_analyze_edit.py` checks the segmentation on synthetic frames on every run. With `denreze-whitelight.mov` at the repo root, or `ANALYZE_EDIT_VIDEO` pointing at it, it also checks the breakdown's ground truth within one frame: the hard cuts, the flashes, the kiss as one shot, the dissolve, the tempo and the drop.
+`tests/test_analyze_edit.py` runs on every invocation: it checks the segmentation on synthetic frames, and the audio map, sections and audio-only CLI on a synthetic 120 BPM track with a drop at 8 s. It also checks that an mp3's cover art isn't read as video. With `denreze-whitelight.mov` at the repo root, or `ANALYZE_EDIT_VIDEO` pointing at it, it also checks the breakdown's ground truth within one frame: the hard cuts, the flashes, the kiss as one shot, the dissolve, the tempo and the drop. It also checks that the soundtrack, extracted to its own file, gives the same audio map.

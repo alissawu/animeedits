@@ -1,10 +1,11 @@
-"""Measure the timeline of a short reference edit: analyze_edit.py VIDEO OUT_DIR.
+"""Measure a reference edit's timeline, or map a song: analyze_edit.py MEDIA OUT_DIR.
 
-Finds hard cuts, white flashes, dips to black and cross-dissolves frame by frame,
-maps the audio with librosa (tempo, beats, strong onsets, loudness, the drop) and
-vocal word timings with faster-whisper, then writes report.md, timeline.json,
-frames.json and contact sheets. Word text is never stored, only timings.
-See docs/edit_analysis.md.
+For video, finds hard cuts, white flashes, dips to black and cross-dissolves frame by
+frame. For anything with sound, maps the audio with librosa (tempo, beats, strong onsets,
+loudness, drops, rough sections) and vocal word timings with faster-whisper. Writes
+report.md and timeline.json, plus frames.json and contact sheets for video. Audio-only
+input (mp3, wav, m4a, flac and so on) gets the audio report only. Word text is never
+stored, only timings. See docs/edit_analysis.md.
 """
 import argparse
 import bisect
@@ -24,7 +25,8 @@ from PIL import Image, ImageDraw, ImageFont
 Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
-VERSION = 1
+# Bump a stage's version when its output changes, so cached results are recomputed.
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 1, 2, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -44,6 +46,13 @@ LOW_BAND = 150.0              # Hz
 ONSET_PERCENTILE = 90.0
 DROP_SKIP = 0.5               # seconds at the start where the audio's own onset is not a drop
 SILENCE_POWER = 1e-6          # -60 dBFS; a drop needs sound before it
+DROP_MIN_DB = 6.0             # besides the biggest jump, a drop needs at least this
+DROP_SHARE = 0.5              # and at least this share of the biggest jump
+DROP_GAP = 4.0                # seconds between separate drops
+NOVELTY_BEATS = (4, 16)       # novelty kernel half-width in beats, scaled with the song's length
+NOVELTY_FLOOR = 0.25          # weakest section boundary, relative to the strongest
+MIN_SECTION = 1.0             # seconds; shortest section from audio boundaries
+LONG_AUDIO = 60.0             # seconds; longer audio gets a coarser loudness table
 PHRASE_GAP = 1.0              # seconds without words that end a vocal phrase
 SNAP = 0.5                    # snap section bounds to a shot boundary this close
 SYNC = 0.1                    # "on" an event when within this many seconds
@@ -54,15 +63,20 @@ THUMB_WIDTH, THUMB_COLUMNS, THUMBS_PER_SHEET = 384, 4, 24
 
 
 @dataclass(frozen=True)
-class VideoInfo:
-    path: str
+class VideoStream:
     width: int
     height: int
     rate: str                 # exact frame rate for ffmpeg, e.g. "30000/1001"
     fps: float
+
+
+@dataclass(frozen=True)
+class MediaInfo:
+    path: str
     duration: float
+    video: VideoStream | None # None for audio-only input
     has_audio: bool
-    audio_offset: float       # audio start minus video start, seconds
+    audio_offset: float       # audio start minus video start, seconds; 0 without video
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,18 @@ class Picture:
 
 
 @dataclass(frozen=True)
+class Drop:
+    time: float
+    jump_db: float            # loudness of the WINDOW after minus the WINDOW before
+
+
+@dataclass(frozen=True)
+class Boundary:
+    time: float               # a beat where timbre and loudness change
+    strength: float           # novelty peak relative to the strongest, 0-1
+
+
+@dataclass(frozen=True)
 class AudioMap:
     duration: float
     offset: float             # time of the first audio sample on the video clock
@@ -119,8 +145,13 @@ class AudioMap:
     onsets: list[float]       # onsets at or above the ONSET_PERCENTILE of onset strength
     rms_db: list[float]       # dBFS per WINDOW, starting at offset
     low_db: list[float]       # dBFS below LOW_BAND per WINDOW
-    drop: float
-    drop_jump_db: float
+    drops: list[Drop]         # in time order
+    boundaries: list[Boundary]  # rough section boundaries, in time order
+
+    @property
+    def drop(self) -> Drop | None:
+        """The biggest loudness jump."""
+        return max(self.drops, key=lambda d: d.jump_db, default=None)
 
 
 @dataclass(frozen=True)
@@ -142,7 +173,8 @@ class Section:
     start: float
     end: float
     phrase: int | None        # 1-based vocal phrase covering most of the section
-    drop: bool
+    vocal_share: float        # share of the section inside vocal phrases
+    drop: Drop | None         # the drop the section starts on
 
 
 @dataclass(frozen=True)
@@ -170,21 +202,25 @@ class Settings:
 
 @dataclass(frozen=True)
 class Analysis:
-    info: VideoInfo
-    picture: Picture
+    info: MediaInfo
+    picture: Picture | None
     audio: AudioMap | None
     words: list[Word]
     phrases: list[Phrase]
     sections: list[Section]
-    sheets: SheetIndex
+    sheets: SheetIndex | None
     settings: Settings
 
+    @property
+    def fps(self) -> float:
+        return _video(self.info).fps
+
     def time(self, frame: int) -> float:
-        return round(frame / self.info.fps, 3)
+        return round(frame / self.fps, 3)
 
     @property
     def shots(self) -> list[Segment]:
-        return [s for s in self.picture.segments if s.kind == "shot"]
+        return [s for s in self.picture.segments if s.kind == "shot"] if self.picture else []
 
     def sync(self, t: float) -> dict[str, Nearest | None]:
         audio = self.audio
@@ -263,7 +299,7 @@ def caption_band(value: str) -> tuple[float, float]:
     return top, bottom
 
 
-# Video input
+# Media input
 
 def _run(cmd: list[str]) -> bytes:
     proc = subprocess.run(cmd, capture_output=True)
@@ -279,47 +315,57 @@ def _rate(text: str | None) -> Fraction | None:
     return Fraction(num, den) if num > 0 and den > 0 else None
 
 
-def probe(video: Path) -> VideoInfo:
+def probe(media: Path) -> MediaInfo:
     meta = json.loads(_run([
         "ffprobe", "-v", "error", "-of", "json", "-show_entries",
         "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,start_time"
-        ":stream_disposition=attached_pic:format=duration", str(video)]))
+        ":stream_disposition=attached_pic:format=duration", str(media)]))
     streams = meta.get("streams", [])
+    # Cover art in an mp3 or m4a is an attached picture, not video.
     vstream = next((s for s in streams if s.get("codec_type") == "video"
                     and not s.get("disposition", {}).get("attached_pic")), None)
-    if vstream is None:
-        raise ValueError(f"no video stream in {video}")
-    rate = _rate(vstream.get("avg_frame_rate")) or _rate(vstream.get("r_frame_rate"))
-    if rate is None:
-        raise ValueError(f"unknown frame rate in {video}")
     astream = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    vstart = float(vstream.get("start_time") or 0)
-    astart = float(astream.get("start_time") or 0) if astream else vstart
-    return VideoInfo(path=str(video), width=int(vstream["width"]), height=int(vstream["height"]),
-                     rate=f"{rate.numerator}/{rate.denominator}", fps=float(rate),
-                     duration=float(meta["format"]["duration"]), has_audio=astream is not None,
-                     audio_offset=round(astart - vstart, 4))
+    if vstream is None and astream is None:
+        raise ValueError(f"no video or audio stream in {media}")
+    video = None
+    offset = 0.0
+    if vstream is not None:
+        rate = _rate(vstream.get("avg_frame_rate")) or _rate(vstream.get("r_frame_rate"))
+        if rate is None:
+            raise ValueError(f"unknown frame rate in {media}")
+        video = VideoStream(int(vstream["width"]), int(vstream["height"]),
+                            f"{rate.numerator}/{rate.denominator}", float(rate))
+        if astream is not None:
+            offset = float(astream.get("start_time") or 0) - float(vstream.get("start_time") or 0)
+    return MediaInfo(path=str(media), duration=float(meta.get("format", {}).get("duration") or 0),
+                     video=video, has_audio=astream is not None, audio_offset=round(offset, 4))
+
+
+def _video(info: MediaInfo) -> VideoStream:
+    if info.video is None:
+        raise ValueError(f"no video stream in {info.path}")
+    return info.video
 
 
 def _even(x: float) -> int:
     return max(2, 2 * round(x / 2))
 
 
-def analysis_size(info: VideoInfo) -> tuple[int, int]:
-    scale = ANALYSIS_SIDE / max(info.width, info.height)
-    return _even(info.width * scale), _even(info.height * scale)
+def analysis_size(video: VideoStream) -> tuple[int, int]:
+    scale = ANALYSIS_SIDE / max(video.width, video.height)
+    return _even(video.width * scale), _even(video.height * scale)
 
 
-def _ffmpeg_frames(info: VideoInfo, width: int, height: int, flags: str) -> list[str]:
+def _ffmpeg_frames(info: MediaInfo, width: int, height: int, flags: str) -> list[str]:
     # The fps filter maps every frame onto a constant grid, so frame i is at i / fps.
     return ["ffmpeg", "-v", "error", "-nostdin", "-i", info.path, "-map", "0:v:0",
-            "-vf", f"fps={info.rate},scale={width}:{height}:flags={flags}",
+            "-vf", f"fps={_video(info).rate},scale={width}:{height}:flags={flags}",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
 
 
-def decode_frames(info: VideoInfo) -> NDArray[np.uint8]:
+def decode_frames(info: MediaInfo) -> NDArray[np.uint8]:
     """Decode every frame at analysis size."""
-    width, height = analysis_size(info)
+    width, height = analysis_size(_video(info))
     raw = _run(_ffmpeg_frames(info, width, height, "area"))
     size = width * height * 3
     if len(raw) < size or len(raw) % size:
@@ -327,7 +373,7 @@ def decode_frames(info: VideoInfo) -> NDArray[np.uint8]:
     return np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
 
 
-def iter_frames(info: VideoInfo, width: int, height: int) -> Iterator[NDArray[np.uint8]]:
+def iter_frames(info: MediaInfo, width: int, height: int) -> Iterator[NDArray[np.uint8]]:
     """Stream frames at the given size without holding the video in memory."""
     size = width * height * 3
     proc = subprocess.Popen(_ffmpeg_frames(info, width, height, "bicubic"),
@@ -695,8 +741,8 @@ def picture_from_json(data: dict[str, Any]) -> Picture:
 
 # Audio
 
-def decode_audio(video: Path, rate: int = SAMPLE_RATE) -> NDArray[np.float32]:
-    raw = _run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(video), "-map", "0:a:0",
+def decode_audio(media: Path, rate: int = SAMPLE_RATE) -> NDArray[np.float32]:
+    raw = _run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(media), "-map", "0:a:0",
                 "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"])
     return np.frombuffer(raw, np.float32)
 
@@ -707,52 +753,100 @@ def _window_db(y: NDArray[np.float32], size: int) -> list[float]:
     return [round(10 * math.log10(max(float(p), 1e-12)), 2) for p in power]
 
 
-def _drop(y: NDArray[np.float32], rate: int) -> tuple[float, float]:
-    """Largest loudness jump between the WINDOW before and the WINDOW after a moment."""
+def _drops(y: NDArray[np.float32], rate: int) -> list[tuple[float, float]]:
+    """(time, dB) of loudness jumps between the WINDOW before and the WINDOW after a moment:
+    the biggest, plus any other of at least DROP_MIN_DB and DROP_SHARE of it, DROP_GAP apart."""
     hop = 512
     count = y.size // hop
     power = (y[:count * hop].astype(np.float64) ** 2).reshape(count, hop).mean(1)
     k = max(1, round(WINDOW * rate / hop))
     total = np.r_[0.0, np.cumsum(power)]
-    best = (0.0, 0.0)
+    jumps: list[tuple[float, float]] = []
     for i in range(max(k, math.ceil(DROP_SKIP * rate / hop)), count - k + 1):
         before = (total[i] - total[i - k]) / k
         after = (total[i + k] - total[i]) / k
         if before > SILENCE_POWER and after > 0:
-            jump = 10 * math.log10(after / before)
-            if jump > best[1]:
-                best = (i * hop / rate, jump)
-    return best
+            jumps.append((10 * math.log10(after / before), i * hop / rate))
+    jumps.sort(reverse=True)
+    if not jumps or jumps[0][0] <= 0:
+        return []
+    floor = max(DROP_MIN_DB, DROP_SHARE * jumps[0][0])
+    kept = [jumps[0]]
+    for jump, t in jumps[1:]:
+        if jump < floor:
+            break
+        if all(abs(t - other) >= DROP_GAP for _, other in kept):
+            kept.append((jump, t))
+    return sorted((t, jump) for jump, t in kept)
 
 
-def analyze_audio(video: Path, offset: float = 0.0) -> AudioMap:
+def _zscore_rows(x: NDArray[np.float32]) -> NDArray[np.float32]:
+    return (x - x.mean(1, keepdims=True)) / (x.std(1, keepdims=True) + 1e-6)
+
+
+def _novelty(y: NDArray[np.float32], rate: int, beat_frames: NDArray[np.int_]) -> list[tuple[float, float]]:
+    """(time, strength) of rough section boundaries: beats where timbre and loudness change,
+    from a checkerboard kernel slid along a beat-synchronous self-similarity matrix."""
+    import librosa
+    if len(beat_frames) < 4 * NOVELTY_BEATS[0]:
+        return []
+    timbre = librosa.feature.mfcc(y=y, sr=rate, n_mfcc=13)[1:]
+    loudness = librosa.amplitude_to_db(librosa.feature.rms(y=y), ref=1.0)
+    frames = librosa.util.fix_frames(beat_frames, x_min=0)
+    beats = librosa.util.sync(np.vstack([_zscore_rows(timbre), _zscore_rows(loudness)]), frames.tolist(),
+                              aggregate=np.median)
+    beats = beats - beats.mean(0, keepdims=True)
+    beats /= np.linalg.norm(beats, axis=0, keepdims=True) + 1e-9
+    similarity = beats.T @ beats
+    n = similarity.shape[0]
+    half = int(np.clip(round(n / 8), *NOVELTY_BEATS))
+    sign = np.r_[-np.ones(half), np.ones(half)] * np.exp(-0.5 * np.linspace(-2, 2, 2 * half) ** 2)
+    kernel = np.outer(sign, sign)
+    padded = np.pad(similarity, half, mode="edge")
+    novelty = np.maximum([float(np.sum(kernel * padded[i:i + 2 * half, i:i + 2 * half])) for i in range(n)], 0)
+    if novelty.max() <= 0:
+        return []
+    novelty /= novelty.max()
+    times = librosa.frames_to_time(frames, sr=rate)
+    return [(float(times[i]), float(novelty[i])) for i in range(2, n - 2)
+            if novelty[i] >= NOVELTY_FLOOR and novelty[i] == novelty[max(0, i - half):i + half + 1].max()]
+
+
+def analyze_audio(media: Path, offset: float = 0.0) -> AudioMap:
     import librosa
     from scipy import signal
-    y = decode_audio(video)
+    y = decode_audio(media)
     if y.size < SAMPLE_RATE:
         raise ValueError("audio is shorter than one second")
-    tempo, beats = librosa.beat.beat_track(y=y, sr=SAMPLE_RATE, units="time")
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=SAMPLE_RATE)
+    beats = librosa.frames_to_time(beat_frames, sr=SAMPLE_RATE)
     strength = librosa.onset.onset_strength(y=y, sr=SAMPLE_RATE)
     peaks = librosa.onset.onset_detect(onset_envelope=strength, sr=SAMPLE_RATE)
     strong = peaks[strength[peaks] >= np.percentile(strength, ONSET_PERCENTILE)]
     onsets = librosa.frames_to_time(strong, sr=SAMPLE_RATE)
     size = round(WINDOW * SAMPLE_RATE)
     low = signal.sosfiltfilt(signal.butter(4, LOW_BAND, "lowpass", fs=SAMPLE_RATE, output="sos"), y)
-    drop, jump = _drop(y, SAMPLE_RATE)
     return AudioMap(duration=round(y.size / SAMPLE_RATE, 3), offset=offset,
                     tempo=round(float(np.atleast_1d(tempo)[0]), 2),
                     beats=[round(float(t) + offset, 3) for t in beats],
                     onsets=[round(float(t) + offset, 3) for t in onsets],
                     rms_db=_window_db(y, size), low_db=_window_db(low.astype(np.float32), size),
-                    drop=round(drop + offset, 3), drop_jump_db=round(jump, 2))
+                    drops=[Drop(round(t + offset, 3), round(jump, 2)) for t, jump in _drops(y, SAMPLE_RATE)],
+                    boundaries=[Boundary(round(t + offset, 3), round(s, 3))
+                                for t, s in _novelty(y, SAMPLE_RATE, beat_frames)])
 
 
-def transcribe_words(video: Path, model_name: str, lang: str | None, offset: float = 0.0) -> list[Word]:
+def audio_from_json(data: dict[str, Any]) -> AudioMap:
+    return AudioMap(**(data | {"drops": [Drop(**d) for d in data["drops"]],
+                               "boundaries": [Boundary(**b) for b in data["boundaries"]]}))
+
+
+def transcribe_words(media: Path, model_name: str, lang: str | None, offset: float = 0.0) -> list[Word]:
     """Word timings from faster-whisper. The words themselves are discarded."""
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=4)
     # Silero VAD drops vocals that sit under music, so every window is decoded.
-    segments, _ = model.transcribe(str(video), language=lang, word_timestamps=True, vad_filter=False)
+    segments, _ = model.transcribe(str(media), language=lang, word_timestamps=True, vad_filter=False)
     return [Word(round(w.start + offset, 3), round(w.end + offset, 3), round(w.probability, 3))
             for s in segments for w in (s.words or []) if w.end > w.start]
 
@@ -786,37 +880,60 @@ def nearest_word_edge(t: float, words: Sequence[Word]) -> Nearest | None:
     return Nearest(near.time, near.delta, next(edge for time, edge in edges if time == near.time))
 
 
-def sections_from(phrases: Sequence[Phrase], drop: float | None, boundaries: Sequence[float],
+def _sections(bounds: Sequence[float], phrases: Sequence[Phrase], drops: Sequence[Drop]) -> list[Section]:
+    """Sections between consecutive bounds, each with its main phrase and the drop it starts on."""
+    starts = list(bounds[:-1])
+    drop_at: dict[int, Drop] = {}
+    for d in drops:
+        near = nearest(d.time, starts)
+        if near is not None and abs(near.delta) <= SNAP:
+            drop_at[starts.index(near.time)] = d
+    sections = []
+    for i, (a, b) in enumerate(zip(bounds, bounds[1:])):
+        overlap = [max(0.0, min(b, p.end) - max(a, p.start)) for p in phrases]
+        best = max(range(len(phrases)), key=overlap.__getitem__, default=None)
+        phrase = best + 1 if best is not None and overlap[best] > (b - a) / 2 else None
+        sections.append(Section(round(a, 3), round(b, 3), phrase, round(sum(overlap) / (b - a), 3),
+                                drop_at.get(i)))
+    return sections
+
+
+def sections_from(phrases: Sequence[Phrase], drops: Sequence[Drop], boundaries: Sequence[float],
                   end: float) -> list[Section]:
-    """Split the edit at vocal phrase edges and the drop, each snapped to a shot boundary within SNAP."""
+    """Edit sections: split at vocal phrase edges and drops, each snapped to a shot boundary within SNAP."""
     def snap(t: float) -> float:
         near = nearest(t, boundaries)
         return near.time if near and abs(near.delta) <= SNAP else t
 
-    drop_mark = snap(drop) if drop is not None else None
-    marks = sorted([snap(t) for p in phrases for t in (p.start, p.end)]
-                   + ([drop_mark] if drop_mark is not None else []))
+    marks = sorted([snap(t) for p in phrases for t in (p.start, p.end)] + [snap(d.time) for d in drops])
     bounds = [0.0]
     for t in marks:
         if WINDOW <= t - bounds[-1] and t <= end - WINDOW:
             bounds.append(t)
-    bounds.append(end)
-    sections = []
-    for a, b in zip(bounds, bounds[1:]):
-        overlap = [max(0.0, min(b, p.end) - max(a, p.start)) for p in phrases]
-        best = max(range(len(phrases)), key=overlap.__getitem__, default=None)
-        phrase = best + 1 if best is not None and overlap[best] > (b - a) / 2 else None
-        sections.append(Section(round(a, 3), round(b, 3), phrase,
-                                drop_mark is not None and abs(a - drop_mark) < WINDOW))
-    return sections
+    return _sections(bounds + [end], phrases, drops)
 
 
-def build_sections(info: VideoInfo, picture: Picture, audio: AudioMap | None,
+def audio_sections(audio: AudioMap, phrases: Sequence[Phrase], end: float) -> list[Section]:
+    """Song sections: split at drops and at novelty boundaries more than MIN_SECTION from a drop."""
+    drop_times = [d.time for d in audio.drops]
+    marks = sorted(drop_times + [b.time for b in audio.boundaries
+                                 if all(abs(b.time - t) > MIN_SECTION for t in drop_times)])
+    bounds = [0.0]
+    for t in marks:
+        if MIN_SECTION <= t - bounds[-1] and t <= end - MIN_SECTION:
+            bounds.append(t)
+    return _sections(bounds + [end], phrases, audio.drops)
+
+
+def build_sections(info: MediaInfo, picture: Picture | None, audio: AudioMap | None,
                    phrases: Sequence[Phrase]) -> list[Section]:
-    boundaries = sorted({round(x / info.fps, 3) for s in picture.segments if s.kind == "shot"
-                         for x in (s.start, s.end)})
-    end = max(len(picture.frames) / info.fps, audio.offset + audio.duration if audio else 0.0)
-    return sections_from(phrases, audio.drop if audio else None, boundaries, round(end, 3))
+    audio_end = audio.offset + audio.duration if audio else 0.0
+    if picture is None:
+        return audio_sections(audio, phrases, round(audio_end, 3)) if audio else []
+    fps = _video(info).fps
+    boundaries = sorted({round(x / fps, 3) for s in picture.segments if s.kind == "shot" for x in (s.start, s.end)})
+    end = round(max(len(picture.frames) / fps, audio_end), 3)
+    return sections_from(phrases, audio.drops if audio else [], boundaries, end)
 
 
 def timeline_json(an: Analysis) -> dict[str, Any]:
@@ -829,19 +946,24 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         row["sync"] = {k: asdict(v) if v else None for k, v in an.sync(an.time(s.start)).items()}
         return row
 
+    picture = None
+    if an.picture is not None:
+        picture = {
+            "frames": len(an.picture.frames),
+            "segments": [segment(s) for s in an.picture.segments],
+            "in_shot": [asdict(e) | {"start_time": an.time(e.start), "end_time": an.time(e.end)}
+                        for e in an.picture.in_shot],
+            "dissolves": [asdict(d) | {"start_time": an.time(d.start), "end_time": an.time(d.end)}
+                          for d in an.picture.dissolves],
+        }
     return {
-        "video": asdict(an.info),
-        "frames": len(an.picture.frames),
-        "segments": [segment(s) for s in an.picture.segments],
-        "in_shot": [asdict(e) | {"start_time": an.time(e.start), "end_time": an.time(e.end)}
-                    for e in an.picture.in_shot],
-        "dissolves": [asdict(d) | {"start_time": an.time(d.start), "end_time": an.time(d.end)}
-                      for d in an.picture.dissolves],
+        "media": asdict(an.info),
+        "picture": picture,
         "audio": asdict(an.audio) if an.audio else None,
         "words": [asdict(w) for w in an.words],
         "phrases": [asdict(p) for p in an.phrases],
         "sections": [asdict(s) for s in an.sections],
-        "sheets": asdict(an.sheets),
+        "sheets": asdict(an.sheets) if an.sheets else None,
         "settings": asdict(an.settings),
     }
 
@@ -855,20 +977,21 @@ def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         return ImageFont.load_default(size=size)
 
 
-def write_sheets(info: VideoInfo, picture: Picture, out: Path, band: tuple[float, float],
+def write_sheets(info: MediaInfo, picture: Picture, out: Path, band: tuple[float, float],
                  step: float) -> SheetIndex:
     """One keyframe per shot, and the caption band every `step` seconds, in one decode pass."""
+    video = _video(info)
     sheets = out / "sheets"
     sheets.mkdir(exist_ok=True)
     for old in [*sheets.glob("shots_*.jpg"), *sheets.glob("captions_*.jpg")]:
         old.unlink()
-    width = _even(min(info.width, SHEET_WIDTH))
-    height = _even(info.height * width / info.width)
+    width = _even(min(video.width, SHEET_WIDTH))
+    height = _even(video.height * width / video.width)
     count = len(picture.frames)
     wanted: dict[int, list[float]] = {}
-    for k in range(math.ceil(count / info.fps / step)):
+    for k in range(math.ceil(count / video.fps / step)):
         t = round(k * step, 3)
-        wanted.setdefault(min(count - 1, round(t * info.fps)), []).append(t)
+        wanted.setdefault(min(count - 1, round(t * video.fps)), []).append(t)
     shots = [s for s in picture.segments if s.kind == "shot" and s.keyframe is not None]
     keys = {s.keyframe for s in shots if s.keyframe is not None}
     top = min(height - 1, round(band[0] * height))
@@ -903,7 +1026,7 @@ def write_sheets(info: VideoInfo, picture: Picture, out: Path, band: tuple[float
             x, y = j % cols * thumb[0], j // cols * (thumb[1] + label)
             assert s.keyframe is not None and s.shot is not None
             sheet.paste(thumbs[s.keyframe], (x, y))
-            draw.text((x + 4, y + thumb[1] + 3), f"S{s.shot}  {s.start / info.fps:.2f}-{s.end / info.fps:.2f}s",
+            draw.text((x + 4, y + thumb[1] + 3), f"S{s.shot}  {s.start / video.fps:.2f}-{s.end / video.fps:.2f}s",
                       fill="white", font=font)
         name = f"shots_{n:02d}.jpg"
         sheet.save(sheets / name, quality=92)
@@ -939,112 +1062,170 @@ def _count(n: int, noun: str, plural: str | None = None) -> str:
     return f"{n} {noun if n == 1 else plural or noun + 's'}"
 
 
-def _power_db(values: Sequence[float]) -> float | None:
+def _power_db(values: Sequence[float]) -> float:
+    """Mean of dB values taken as power; -120 for no values."""
     if not values:
-        return None
+        return -120.0
     return 10 * math.log10(sum(10 ** (v / 10) for v in values) / len(values))
 
 
-def render_report(an: Analysis) -> str:
-    info, picture, audio, fps = an.info, an.picture, an.audio, an.info.fps
-    segments, shots = picture.segments, an.shots
-    flashes = [s for s in segments if s.kind == "flash"]
-    blacks = [s for s in segments if s.kind == "black"]
+def _clock(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{seconds % 60:05.2f}"
 
-    def seconds(s: Segment) -> float:
-        return (s.end - s.start) / fps
 
-    lines = [f"# Edit analysis: {Path(info.path).name}", ""]
-    picture_span = [s for s in segments if s.kind != "black"]
-    span = (f"Picture runs {an.time(picture_span[0].start):.2f}–{an.time(picture_span[-1].end):.2f} s"
-            if picture_span else "The picture is black throughout")
-    lines += [f"Measured by `scene_frames/analyze_edit.py`. {info.duration:.2f} s, {info.width}×{info.height}, "
-              f"{fps:g} fps, so one frame is {1000 / fps:.0f} ms. {span}. Times are seconds from the first frame.",
-              "Word timings are machine-made; no lyric or dialogue text is stored.", ""]
+def _windows(audio: AudioMap, start: float, end: float) -> list[int]:
+    return [i for i in range(len(audio.rms_db)) if start <= audio.offset + (i + 0.5) * WINDOW < end]
 
-    lines += ["## Skeleton", ""]
+
+def _loudness(audio: AudioMap, start: float, end: float) -> str:
+    values = [audio.rms_db[i] for i in _windows(audio, start, end)]
+    return f"{_power_db(values):.1f} / {max(values):.1f}" if values else "—"
+
+
+def _header(an: Analysis) -> list[str]:
+    name = Path(an.info.path).name
+    if an.picture is None:
+        length = an.audio.duration if an.audio else an.info.duration
+        return [f"# Audio analysis: {name}", "",
+                f"Measured by `scene_frames/analyze_edit.py` from audio only. {_clock(length)} long. "
+                "Times are seconds from the first sample.",
+                "Word timings are machine-made; no lyric text is stored.", ""]
+    video, segments = _video(an.info), an.picture.segments
+    visible = [s for s in segments if s.kind != "black"]
+    span = (f"Picture runs {an.time(visible[0].start):.2f}–{an.time(visible[-1].end):.2f} s"
+            if visible else "The picture is black throughout")
+    return [f"# Edit analysis: {name}", "",
+            f"Measured by `scene_frames/analyze_edit.py`. {an.info.duration:.2f} s, {video.width}×{video.height}, "
+            f"{video.fps:g} fps, so one frame is {1000 / video.fps:.0f} ms. {span}. Times are seconds from the "
+            "first frame.", "Word timings are machine-made; no lyric or dialogue text is stored.", ""]
+
+
+def _skeleton(an: Analysis) -> list[str]:
+    audio = an.audio
+    lines = ["## Skeleton", ""]
     if audio:
-        lines += [f"- **Tempo:** {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s; "
-                  f"{len(audio.beats)} beats tracked.",
-                  f"- **Drop:** {audio.drop:.2f} s, {audio.drop_jump_db:+.1f} dB from the {WINDOW:g} s before "
-                  f"to the {WINDOW:g} s after."]
+        lines.append(f"- **Tempo:** {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s; "
+                     f"{len(audio.beats)} beats tracked.")
+        jumps = ", ".join(f"{d.time:.2f} s ({d.jump_db:+.1f} dB)" for d in audio.drops) or "none"
+        lines.append(f"- **{'Drop' if len(audio.drops) == 1 else 'Drops'}:** {jumps}, measured as the loudness "
+                     f"change from the {WINDOW:g} s before to the {WINDOW:g} s after.")
+        bounds = ", ".join(f"{b.time:.2f}" for b in audio.boundaries) or "none found"
+        lines.append(f"- **Section boundaries in the audio** (timbre and loudness novelty, on beats): {bounds}.")
     else:
         lines.append("- **Audio:** none.")
     if an.phrases:
         lines.append("- **Vocal phrases:** " + "; ".join(
             f"{i}. {p.start:.2f}–{p.end:.2f} ({p.words} words)" for i, p in enumerate(an.phrases, 1)))
     elif an.settings.whisper_model is None:
-        lines.append("- **Vocal phrases:** not transcribed (`--no-words`).")
+        lines.append("- **Vocal phrases:** not transcribed.")
     else:
         lines.append("- **Vocal phrases:** none found.")
-    mean_shot = sum(seconds(s) for s in shots) / len(shots) if shots else 0.0
-    lines.append(f"- **Picture:** {_count(len(shots), 'shot')} averaging {mean_shot:.2f} s, "
-                 f"{_count(len(flashes), 'flash', 'flashes')}, {_count(len(blacks), 'stretch', 'stretches')} "
-                 f"of black, {_count(len(picture.dissolves), 'dissolve')}.")
-    changes = [an.time(s.end) for s in shots[:-1]]  # when each outgoing shot leaves
-    if changes:
-        counts = [bisect.bisect_left(changes, round(t + 1.0, 3)) - i for i, t in enumerate(changes)]
-        best = counts.index(max(counts))
-        lines.append(f"- **Busiest second:** {_count(counts[best], 'shot change')} in "
-                     f"{changes[best]:.2f}–{changes[best] + 1:.2f}.")
-    lines.append("")
+    shots = an.shots
+    if an.picture is not None:
+        flashes = sum(s.kind == "flash" for s in an.picture.segments)
+        blacks = sum(s.kind == "black" for s in an.picture.segments)
+        mean_shot = sum(s.end - s.start for s in shots) / len(shots) / an.fps if shots else 0.0
+        lines.append(f"- **Picture:** {_count(len(shots), 'shot')} averaging {mean_shot:.2f} s, "
+                     f"{_count(flashes, 'flash', 'flashes')}, {_count(blacks, 'stretch', 'stretches')} of black, "
+                     f"{_count(len(an.picture.dissolves), 'dissolve')}.")
+        changes = [an.time(s.end) for s in shots[:-1]]  # when each outgoing shot leaves
+        if changes:
+            counts = [bisect.bisect_left(changes, round(t + 1.0, 3)) - i for i, t in enumerate(changes)]
+            best = counts.index(max(counts))
+            lines.append(f"- **Busiest second:** {_count(counts[best], 'shot change')} in "
+                         f"{changes[best]:.2f}–{changes[best] + 1:.2f}.")
+    return lines + [""]
 
-    lines += ["| Section | Time (s) | Vocals | Shots | Avg shot (s) | Flashes | Loudness mean / peak (dB) |",
-              "|---|---|---|---|---|---|---|"]
+
+def _pacing_table(an: Analysis) -> list[str]:
+    assert an.picture is not None
+    lines = ["| Section | Time (s) | Vocals | Shots | Avg shot (s) | Flashes | Loudness mean / peak (dB) |",
+             "|---|---|---|---|---|---|---|"]
+    flashes = [s for s in an.picture.segments if s.kind == "flash"]
     for n, sec in enumerate(an.sections, 1):
-        inside = [s for s in shots if sec.start <= an.time(s.start) < sec.end]
+        inside = [s for s in an.shots if sec.start <= an.time(s.start) < sec.end]
         flash_count = sum(sec.start <= an.time(s.start) < sec.end for s in flashes)
-        avg = f"{sum(seconds(s) for s in inside) / len(inside):.2f}" if inside else "—"
-        loud = "—"
-        if audio:
-            values = [db for i, db in enumerate(audio.rms_db)
-                      if sec.start <= audio.offset + (i + 0.5) * WINDOW < sec.end]
-            mean = _power_db(values)
-            loud = f"{mean:.1f} / {max(values):.1f}" if mean is not None else "—"
+        avg = f"{sum(s.end - s.start for s in inside) / len(inside) / an.fps:.2f}" if inside else "—"
+        loud = _loudness(an.audio, sec.start, sec.end) if an.audio else "—"
         vocals = f"phrase {sec.phrase}" if sec.phrase else "none"
         drop = " (drop)" if sec.drop else ""
         lines.append(f"| {n}{drop} | {sec.start:.2f}–{sec.end:.2f} | {vocals} | {len(inside)} | {avg} | "
                      f"{flash_count} | {loud} |")
-    lines.append("")
+    return lines + [""]
 
-    lines += ["## Cut by cut", "",
-              f"Each row is measured at its first frame. For a shot after a dissolve, that is the first "
-              f"blended frame. Beat, onset and word give the nearest event and the row's offset from it "
-              f"(+ means the row starts after the event); events more than {REACH:g} s away are left out. "
-              f"\"On\" lists events within {SYNC:.2f} s.", "",
-              "| # | Row | In–out (s) | Length | Enter | Beat | Strong onset | Word edge | On |",
-              "|---|---|---|---|---|---|---|---|---|"]
-    dissolve_of = {d.shot: d for d in picture.dissolves}
-    for n, s in enumerate(segments, 1):
+
+def _cut_table(an: Analysis) -> list[str]:
+    assert an.picture is not None
+    lines = ["## Cut by cut", "",
+             "Each row is measured at its first frame. For a shot after a dissolve, that is the first blended "
+             "frame. Beat, onset and word give the nearest event and the row's offset from it (+ means the row "
+             f"starts after the event); events more than {REACH:g} s away are left out. \"On\" lists events within "
+             f"{SYNC:.2f} s.", "",
+             "| # | Row | In–out (s) | Length | Enter | Beat | Strong onset | Word edge | On |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    dissolve_of = {d.shot: d for d in an.picture.dissolves}
+    for n, s in enumerate(an.picture.segments, 1):
         sync = an.sync(an.time(s.start))
         on = ", ".join(k for k, v in sync.items() if v and abs(v.delta) <= SYNC + 1e-9) or "—"
         if s.kind == "shot":
             row = f"S{s.shot}"
             enter = s.enter or "cut"
             if s.shot in dissolve_of:
-                d = dissolve_of[s.shot]
-                enter = f"dissolve to {an.time(d.end):.2f}"
+                enter = f"dissolve to {an.time(dissolve_of[s.shot].end):.2f}"
         else:
             row, enter = s.kind, "—"
         lines.append(f"| {n} | {row} | {an.time(s.start):.2f}–{an.time(s.end):.2f} | "
-                     f"{seconds(s):.2f} s · {s.end - s.start}f | {enter} | {_cell(sync['beat'])} | "
+                     f"{(s.end - s.start) / an.fps:.2f} s · {s.end - s.start}f | {enter} | {_cell(sync['beat'])} | "
                      f"{_cell(sync['onset'])} | {_cell(sync['word'])} | {on} |")
     lines.append("")
-    if picture.in_shot:
+    if an.picture.in_shot:
         lines += ["In-shot flashes and dark frames (not cuts): " + "; ".join(
             f"S{e.shot} {'white flash' if e.kind == 'flash' else 'dark frames'} "
-            f"{an.time(e.start):.2f}–{an.time(e.end):.2f}" for e in picture.in_shot) + ".", ""]
+            f"{an.time(e.start):.2f}–{an.time(e.end):.2f}" for e in an.picture.in_shot) + ".", ""]
+    return lines
 
+
+def _section_table(an: Analysis) -> list[str]:
+    """Song sections for audio-only input."""
+    audio = an.audio
+    if audio is None or not an.sections:
+        return []
+    lines = ["## Sections", "",
+             "Split at drops and audio section boundaries. Vocals is the main phrase, or the share of the "
+             "section with vocals.", "",
+             "| # | Time (s) | Length (s) | Beats | Vocals | Loudness mean / peak (dB) | Low band mean (dB) "
+             "| Starts on |",
+             "|---|---|---|---|---|---|---|---|"]
+    strength = {b.time: b.strength for b in audio.boundaries}
+    for n, sec in enumerate(an.sections, 1):
+        beats = sum(sec.start <= t < sec.end for t in audio.beats)
+        vocals = f"phrase {sec.phrase}" if sec.phrase else (f"{sec.vocal_share:.0%}" if sec.vocal_share else "none")
+        low = _power_db([audio.low_db[i] for i in _windows(audio, sec.start, sec.end)])
+        if sec.drop:
+            starts = f"drop {sec.drop.jump_db:+.1f} dB"
+        elif sec.start in strength:
+            starts = f"boundary {strength[sec.start]:.2f}"
+        else:
+            starts = "start"
+        lines.append(f"| {n} | {sec.start:.2f}–{sec.end:.2f} | {sec.end - sec.start:.2f} | {beats} | {vocals} | "
+                     f"{_loudness(audio, sec.start, sec.end)} | {low:.1f} | {starts} |")
+    return lines + [""]
+
+
+def _audio_detail(an: Analysis) -> list[str]:
+    audio, lines = an.audio, []
     if audio:
+        # A quarter-second grid for short clips; whole seconds for songs.
+        group = 1 if audio.duration <= LONG_AUDIO else round(1 / WINDOW)
+        cell = WINDOW * group
+        rms = [_power_db(audio.rms_db[i:i + group]) for i in range(0, len(audio.rms_db), group)]
+        low = [_power_db(audio.low_db[i:i + group]) for i in range(0, len(audio.low_db), group)]
         lines += ["## Audio detail", "",
-                  f"Loudness in dBFS per {WINDOW:g} s window, with the band below {LOW_BAND:g} Hz after the slash.",
-                  "", "| s | +0.00 | +0.25 | +0.50 | +0.75 |", "|---|---|---|---|---|"]
-        per_row = round(1 / WINDOW)
-        for r in range(0, len(audio.rms_db), per_row):
-            cells = [f"{audio.rms_db[i]:.1f} / {audio.low_db[i]:.1f}"
-                     for i in range(r, min(r + per_row, len(audio.rms_db)))]
-            cells += [""] * (per_row - len(cells))
-            lines.append(f"| {audio.offset + r * WINDOW:.0f} | " + " | ".join(cells) + " |")
+                  f"Loudness in dBFS per {cell:g} s, with the band below {LOW_BAND:g} Hz after the slash.", "",
+                  "| s | " + " | ".join(f"+{k * cell:.2f}" for k in range(4)) + " |", "|---|---|---|---|---|"]
+        for r in range(0, len(rms), 4):
+            cells = [f"{rms[i]:.1f} / {low[i]:.1f}" for i in range(r, min(r + 4, len(rms)))]
+            lines.append(f"| {audio.offset + r * cell:g} | " + " | ".join(cells + [""] * (4 - len(cells))) + " |")
         lines += ["", f"**Beats:** {' '.join(f'{t:.2f}' for t in audio.beats)}", "",
                   f"**Strong onsets** (at or above the {ONSET_PERCENTILE:g}th percentile of onset strength): "
                   f"{' '.join(f'{t:.2f}' for t in audio.onsets)}", ""]
@@ -1054,23 +1235,38 @@ def render_report(an: Analysis) -> str:
             timed = [w for w in an.words if p.start <= w.start and w.end <= p.end]
             lines.append(f"{i}. " + ", ".join(f"{w.start:.2f}–{w.end:.2f}" for w in timed))
         lines.append("")
+    return lines
 
-    lines += ["## Contact sheets", ""]
-    lines += [f"- [{path}]({path}): S{a}–S{b}" for path, a, b in an.sheets.shots]
+
+def _sheet_lines(an: Analysis) -> list[str]:
+    if an.sheets is None:
+        return []
     top, bottom = an.settings.caption_band
-    lines += [f"- [{path}]({path}): caption band ({top:.0%}–{bottom:.0%} of the frame height) "
-              f"every {an.settings.caption_step:g} s, {a:.2f}–{b:.2f} s" for path, a, b in an.sheets.captions]
+    return (["## Contact sheets", ""]
+            + [f"- [{path}]({path}): S{a}–S{b}" for path, a, b in an.sheets.shots]
+            + [f"- [{path}]({path}): caption band ({top:.0%}–{bottom:.0%} of the frame height) every "
+               f"{an.settings.caption_step:g} s, {a:.2f}–{b:.2f} s" for path, a, b in an.sheets.captions] + [""])
+
+
+def render_report(an: Analysis) -> str:
+    lines = _header(an) + _skeleton(an)
+    if an.picture is not None:
+        lines += _pacing_table(an) + _cut_table(an)
+    else:
+        lines += _section_table(an)
     st = an.settings
-    lines += ["", "## Settings", "",
-              f"Cut threshold {st.cut_threshold:g}, minimum shot {st.min_shot} frames, "
-              f"Whisper {st.whisper_model or 'skipped'}{f' ({st.lang})' if st.lang else ''}, "
-              f"analysis version {VERSION}.", ""]
+    picture = (f"Cut threshold {st.cut_threshold:g}, minimum shot {st.min_shot} frames, "
+               if an.picture is not None else "")
+    lines += _audio_detail(an) + _sheet_lines(an) + [
+        "## Settings", "",
+        f"{picture}Whisper {st.whisper_model or 'skipped'}{f' ({st.lang})' if st.lang else ''}; versions: "
+        f"picture {PICTURE_VERSION}, audio {AUDIO_VERSION}, words {WORDS_VERSION}.", ""]
     return "\n".join(lines)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("video", type=Path)
+    ap.add_argument("media", type=Path, help="a video, or an audio file for the audio report only")
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("--cut-threshold", type=unit_float, default=CUT_THRESHOLD,
                     help=f"structure and edge distance needed for a hard cut (default {CUT_THRESHOLD})")
@@ -1084,55 +1280,62 @@ def main() -> None:
     ap.add_argument("--lang", help="language code for a multilingual Whisper model; default auto-detect")
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
     a = ap.parse_args()
-    video, out = a.video.resolve(), a.out_dir.resolve()
-    if not video.is_file():
-        ap.error(f"no such video: {video}")
+    media, out = a.media.resolve(), a.out_dir.resolve()
+    if not media.is_file():
+        ap.error(f"no such file: {media}")
     out.mkdir(parents=True, exist_ok=True)
     cache = out / "cache"
     cache.mkdir(exist_ok=True)
-    stat = video.stat()
-    source = {"video": str(video), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "version": VERSION}
-    info = probe(video)
+    stat = media.stat()
+    source = {"source": str(media), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    info = probe(media)
 
-    picture_sig = source | {"cut_threshold": a.cut_threshold, "min_shot": a.min_shot}
-    data = cached(cache / "picture.json", picture_sig)
-    if data is None:
-        picture = analyze_picture(decode_frames(info), info.fps, cut_threshold=a.cut_threshold, min_shot=a.min_shot)
-        save(cache / "picture.json", {"signature": picture_sig, "data": asdict(picture)})
-    else:
-        picture = picture_from_json(data)
-    shot_count = sum(s.kind == "shot" for s in picture.segments)
-    print(f"picture: {shot_count} shots, {sum(s.kind == 'flash' for s in picture.segments)} flashes", flush=True)
+    picture: Picture | None = None
+    if info.video is not None:
+        picture_sig = source | {"cut_threshold": a.cut_threshold, "min_shot": a.min_shot, "version": PICTURE_VERSION}
+        data = cached(cache / "picture.json", picture_sig)
+        if data is None:
+            picture = analyze_picture(decode_frames(info), info.video.fps, cut_threshold=a.cut_threshold,
+                                      min_shot=a.min_shot)
+            save(cache / "picture.json", {"signature": picture_sig, "data": asdict(picture)})
+        else:
+            picture = picture_from_json(data)
+        print(f"picture: {sum(s.kind == 'shot' for s in picture.segments)} shots, "
+              f"{sum(s.kind == 'flash' for s in picture.segments)} flashes", flush=True)
 
     audio: AudioMap | None = None
     if info.has_audio:
-        data = cached(cache / "audio.json", source)
+        audio_sig = source | {"version": AUDIO_VERSION}
+        data = cached(cache / "audio.json", audio_sig)
         if data is None:
-            audio = analyze_audio(video, info.audio_offset)
-            save(cache / "audio.json", {"signature": source, "data": asdict(audio)})
+            audio = analyze_audio(media, info.audio_offset)
+            save(cache / "audio.json", {"signature": audio_sig, "data": asdict(audio)})
         else:
-            audio = AudioMap(**data)
-        print(f"audio: {audio.tempo:.1f} BPM, drop at {audio.drop:.2f}s", flush=True)
+            audio = audio_from_json(data)
+        drop = audio.drop
+        print(f"audio: {audio.tempo:.1f} BPM, {_count(len(audio.drops), 'drop')}"
+              f"{f', biggest at {drop.time:.2f}s' if drop else ''}", flush=True)
 
     words: list[Word] = []
     model = None if a.no_words or not info.has_audio else a.whisper_model
     if model is not None:
-        words_sig = source | {"model": model, "lang": a.lang}
+        words_sig = source | {"model": model, "lang": a.lang, "version": WORDS_VERSION}
         data = cached(cache / "words.json", words_sig)
         if data is None:
-            words = transcribe_words(video, model, a.lang, info.audio_offset)
+            words = transcribe_words(media, model, a.lang, info.audio_offset)
             save(cache / "words.json", {"signature": words_sig, "data": [asdict(w) for w in words]})
         else:
             words = [Word(**w) for w in data]
         print(f"words: {len(words)} timed", flush=True)
 
     phrases = phrases_from(words)
-    analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases),
-                        write_sheets(info, picture, out, a.caption_band, a.caption_step),
+    sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
+    analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
                         Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang))
     save(out / "timeline.json", timeline_json(analysis))
-    save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)
-                               for i, s in enumerate(picture.frames)])
+    if picture is not None:
+        save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)
+                                   for i, s in enumerate(picture.frames)])
     (out / "report.md").write_text(render_report(analysis))
     print(f"report -> {out / 'report.md'}")
 

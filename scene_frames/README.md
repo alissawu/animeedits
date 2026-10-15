@@ -2,7 +2,7 @@
 
 Detect shots and select keyframes with `detect.py VIDEO OUT_DIR`. Build captions and timestamped dialogue with `index.py VIDEO OUT_DIR`.
 
-Measure a short reference edit's cuts, flashes, beats and word timings with `analyze_edit.py VIDEO OUT_DIR`; see [edit analysis](../docs/edit_analysis.md).
+Measure a short reference edit's cuts, flashes, beats and word timings, or map a song file's beats, drops, sections and word timings, with `analyze_edit.py MEDIA OUT_DIR`; see [edit analysis](../docs/edit_analysis.md).
 
 Install `requirements.txt` and ffmpeg. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 
