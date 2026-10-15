@@ -26,8 +26,8 @@ HERE = Path(__file__).resolve().parent
 YUNET = HERE / "models" / "face_detection_yunet_2023mar.onnx"
 ANIME = HERE / "models" / "lbpcascade_animeface.xml"
 N_CHUNKS = 3
-ANALYSIS_WIDTH = 160    # motion and flashes are measured on this downscale
-LOOK_WIDTH = 80         # look stats pool pixels from this smaller downscale
+ANALYSIS_WIDTH = 160    # motion and flashes are measured on a downscale about this wide
+LOOK_WIDTH = 80         # look stats pool pixels from a smaller downscale about this wide
 LOOK_FRAMES = 8         # evenly spaced usable frames per shot pooled for look stats
 PALETTE_SIZE = 5
 GRAY_SATURATION = 0.05  # below this mean saturation a shot has no meaningful hue
@@ -252,6 +252,12 @@ def find_cuts(input: str | Path, threshold: float, min_len: int, proxy: int | No
                 detect(source, ContentDetector(threshold=threshold, min_scene_len=min_len))]
 
 
+def downscale(img: Frame, factor: int) -> Frame:
+    """Shrink by a whole-number factor. OpenCV area-averages that on a fast path; an arbitrary
+    target size such as 1920x800 -> 160x67 takes over ten times longer per frame."""
+    return cv2.resize(img, None, fx=1 / factor, fy=1 / factor, interpolation=cv2.INTER_AREA)
+
+
 def write_jpeg(path: Path, img: Frame) -> None:
     if not cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, 95]):
         raise OSError(f"cannot write {path}")
@@ -274,8 +280,8 @@ def extract_frames(input: str | Path, out_dir: str | Path, *, faces: FaceMode | 
     if fps <= 0 or total <= 0 or width <= 0 or height <= 0:
         cap.release()
         raise ValueError("video has no readable frames or frame rate")
-    small_size = (ANALYSIS_WIDTH, max(1, round(ANALYSIS_WIDTH * height / width)))
-    look_size = (LOOK_WIDTH, max(1, round(LOOK_WIDTH * height / width)))
+    small_factor = max(1, round(width / ANALYSIS_WIDTH))
+    look_factor = max(1, round(width / LOOK_WIDTH))
     max_flash = max(1, round(fps * FLASH_MAX_S))
     try:
         scenes = find_cuts(input, threshold, min_len, proxy) or [(0, total)]
@@ -304,17 +310,16 @@ def extract_frames(input: str | Path, out_dir: str | Path, *, faces: FaceMode | 
                 ok, fr = cap.read()
                 if not ok:
                     raise RuntimeError(f"video ended unexpectedly at frame {f}")
-                small = cv2.resize(fr, small_size, interpolation=cv2.INTER_AREA)
-                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                gray = downscale(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY), small_factor)
                 luma.append(float(gray.mean()) / 255)
                 if prev is not None:
-                    flow.append(round(flow_speed(prev, gray) / ANALYSIS_WIDTH * fps, 4))
+                    flow.append(round(flow_speed(prev, gray) / gray.shape[1] * fps, 4))
                 prev = gray
                 if len(head) <= max_flash:
                     head.append(fr)
                 tail.append(fr)
                 if f in look_at:
-                    look_frames.append((f, cv2.resize(small, look_size, interpolation=cv2.INTER_AREA)))
+                    look_frames.append((f, downscale(fr, look_factor)))
                 if lo <= f < hi and (selected is None or f in selected):
                     chunk = chunks[min(n_chunks - 1, (f - lo) * n_chunks // (hi - lo))]
                     chunk.append((score_frame(fr), f, fr))

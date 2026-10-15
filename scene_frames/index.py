@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import base64
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from anthropic import Anthropic
     from anthropic.types import TextBlockParam
 
-DETECTION_VERSION = 2
+DETECTION_VERSION = 3
 PROMPT_VERSION = 4
 TRANSCRIPT_VERSION = 2
 SUBTITLES_VERSION = 1
@@ -485,6 +485,13 @@ def transcribe(audio: NDArray[np.float32], model_name: str, lang: str | None, va
     ])
 
 
+def transcribe_and_save(video: Path, stream: int, model_name: str, lang: str | None, vad: bool,
+                        path: Path, signature: Mapping[str, object]) -> Transcript:
+    transcript = transcribe(decode_audio(video, stream), model_name, lang, vad)
+    save(path, {"signature": signature, "data": transcript})
+    return transcript
+
+
 def parse_srt(text: str) -> list[Line]:
     """Cues from SRT text, with HTML and ASS markup removed and ASS vector drawings dropped."""
     cues: list[Line] = []
@@ -545,7 +552,7 @@ def main() -> None:
     ap.add_argument("--title", help="what the video is, e.g. a show and season; default: --context's # heading")
     ap.add_argument("--context", type=Path, help="markdown whose ## Cast section says how to recognize characters")
     ap.add_argument("--sheet-size", type=positive_int, default=12, help="shots per caption sheet")
-    ap.add_argument("--workers", type=positive_int, default=4)
+    ap.add_argument("--workers", type=positive_int, default=10, help="sheets captioned at once")
     ap.add_argument("--whisper-model", default="small")
     ap.add_argument("--lang", help="language code; default auto-detect")
     ap.add_argument("--audio-stream", type=int, default=0, help="audio stream to transcribe (0:a:N)")
@@ -586,6 +593,21 @@ def main() -> None:
     cache.mkdir(exist_ok=True)
     stat = video.stat()
     source = {"video": str(video), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    # Transcription needs nothing from detection or captions, so it runs alongside them. If a later stage
+    # fails, the process still waits for the transcript and caches it, so a rerun skips it.
+    background = ThreadPoolExecutor(max_workers=1)
+    transcript: Transcript | None = None
+    transcript_job: Future[Transcript] | None = None
+    if audio_stream is not None:
+        transcript_sig = {**source, "model": a.whisper_model, "lang": a.lang, "vad": a.vad,
+                          "audio_stream": audio_stream["index"], "version": TRANSCRIPT_VERSION}
+        transcript = cast("Transcript | None", cached(cache / "transcript.json", transcript_sig))
+        if transcript is None:
+            print("transcribing dialogue in the background", flush=True)
+            transcript_job = background.submit(transcribe_and_save, video, audio_stream["index"], a.whisper_model,
+                                               a.lang, a.vad, cache / "transcript.json", transcript_sig)
+
     signature = {**source, "faces": a.faces, "sample": a.sample, "threshold": a.threshold,
                  "min_len": a.min_len, "proxy": a.proxy, "version": DETECTION_VERSION}
     rows = cast("list[Shot] | None", cached(cache / "detection.json", signature))
@@ -646,15 +668,12 @@ def main() -> None:
                 jobs, lambda job: caption_sheet(client, job.shots, job.sheet, a.caption_model, title, cast_notes),
                 a.workers))
 
-    dialogue = None
-    if audio_stream is not None:
-        transcript_sig = {**source, "model": a.whisper_model, "lang": a.lang, "vad": a.vad,
-                          "audio_stream": audio_stream["index"], "version": TRANSCRIPT_VERSION}
-        transcript = cast("Transcript | None", cached(cache / "transcript.json", transcript_sig))
-        if transcript is None:
-            transcript = transcribe(decode_audio(video, audio_stream["index"]), a.whisper_model, a.lang, a.vad)
-            save(cache / "transcript.json", {"signature": transcript_sig, "data": transcript})
-        dialogue = transcript["segments"]
+    if transcript_job is not None:
+        if not transcript_job.done():
+            print("waiting for the transcript", flush=True)
+        transcript = transcript_job.result()
+    background.shutdown()
+    dialogue = transcript["segments"] if transcript is not None else None
     subtitles = None
     if subs_stream is not None:
         subtitles_sig = {**source, "subs_stream": subs_stream["index"], "version": SUBTITLES_VERSION}

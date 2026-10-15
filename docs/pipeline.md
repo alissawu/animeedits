@@ -15,7 +15,7 @@ Writes `scenes.json` and `scene_0004_005.90s.jpg`-style stills. Omit `--sample` 
 python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
-Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
+Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, in the background while shots are detected and captioned, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Whisper downloads its model on first use.
 
 ### Captioners
 
@@ -84,7 +84,7 @@ The first audio stream (`0:a:0`) is transcribed unless `--audio-stream N` picks 
 
 Whisper runs with voice-activity detection by default, which keeps it from inventing lines over music and silence. On edits, where dialogue is mixed under a song, it can drop every line: on the White Light reference edit it removed both. Use `--no-vad` there.
 
-Defaults are `--captioner claude`, `--caption-model claude-haiku-5-5`, `--workers 4` (sheets captioned at once), `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
+Defaults are `--captioner claude`, `--caption-model claude-haiku-5-5`, `--workers 10` (sheets captioned at once), `--whisper-model small`, and automatic language detection. Use `--lang en` to force English or `--whisper-model small.en` for an English-only model.
 
 ### shots.json
 

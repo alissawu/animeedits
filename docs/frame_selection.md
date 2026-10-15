@@ -30,7 +30,7 @@ Agents can rename stills with a label as long as the timestamp stays at the end,
 ## How it works
 
 1. **Find shots.** PySceneDetect's ContentDetector compares each frame's hue/saturation/brightness to the previous one; a big jump is a camera cut. This finds shots (camera cuts), not scenes, so one scene can produce several shots. Slight over-splitting is preferred to missing a cut.
-2. **Read every frame once.** Frames stream in order and only the current shot's candidates stay in memory. Each frame is downscaled to 160 px wide for motion, flash and look measurements.
+2. **Read every frame once.** Frames stream in order and only the current shot's candidates stay in memory. Each frame is downscaled to about 160 px wide for motion and flash measurements, and about 80 px for look stats. The downscale uses a whole-number factor (12 for 1920 px video), which keeps OpenCV on its fast area-averaging path: an arbitrary size like 160×67 from 1920×800 took 7.8 ms a frame against 0.55 ms.
 3. **Pick a keyframe.** The first and last ~1/6 of each shot are skipped to avoid dissolves and flashes. Each remaining frame is scored on sharpness (Laplacian variance), contrast (luma std) and closeness to mid exposure. The highest score wins, unless it's part of a flash.
 4. **Faces (optional).** With `--faces live` (YuNet) or `--faces anime` (lbpcascade_animeface), the shot is split into 3 time chunks and the best frame of each chunk becomes a candidate. Candidates are face-checked in order of score, stopping at the first face. If none has a face, the shot is treated as faceless and the top-scoring frame is kept.
 5. **Edges, flashes, motion, look.** Measured from the same pass, as below.
