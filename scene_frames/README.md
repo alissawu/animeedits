@@ -1,7 +1,9 @@
 # scene_frames
 
-Detect shots and select keyframes with `detect.py VIDEO OUT_DIR`. Build captions and timestamped dialogue with `index.py VIDEO OUT_DIR`.
+Detect shots with `detect.py VIDEO OUT_DIR`: per shot, a keyframe, first and last frames, a motion curve with its peaks, flashes and look stats. Build the full index for an edit director with `index.py VIDEO OUT_DIR`, which adds captions, word-timed dialogue and optional embedded subtitles in `shots.json`.
 
-Install `requirements.txt` and ffmpeg. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
+Needs Python 3.11+, `requirements.txt` and ffmpeg/ffprobe. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 
-`sheet.py` remains the small manual contact-sheet script. Run inside an output directory, optionally with an argument to use `labels.json`. The indexer builds its own 24-frame sheets without loading a whole movie’s keyframes into memory.
+`sheet.py OUT_DIR [--labels labels.json]` draws one contact sheet of every shot in a detect.py output directory, optionally with a line of text under each tile. The indexer builds its own numbered sheets for captioning, a few shots at a time.
+
+Tests: `python -m unittest discover -s tests` (the video tests generate their input with ffmpeg). Types: `mypy` from this directory (strict, configured in `mypy.ini`).
