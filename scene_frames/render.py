@@ -290,6 +290,20 @@ def framing_filter(clip: Clip, first: int, out: Output, sar: float) -> str:
             + ":interpolation=cubic:eval=frame")
 
 
+def _balanced_sum(terms: Sequence[str]) -> str:
+    """terms joined with + as a balanced tree of parentheses.
+
+    ffmpeg's expression parser rejects a flat chain of 100 or more terms, which a clip of
+    about four seconds already needs. Nesting halves keeps the depth at log2 of the count.
+    """
+    if not terms:
+        raise ValueError("a sum needs at least one term")
+    if len(terms) == 1:
+        return terms[0]
+    mid = len(terms) // 2
+    return f"({_balanced_sum(terms[:mid])}+{_balanced_sum(terms[mid:])})"
+
+
 def _index_set(indices: list[int]) -> str:
     """select expression true for the given frame numbers, as runs."""
     runs: list[list[int]] = []
@@ -298,7 +312,7 @@ def _index_set(indices: list[int]) -> str:
             runs[-1][1] = n
         else:
             runs.append([n, n])
-    return "+".join(f"between(n,{a},{b})" if a != b else f"eq(n,{a})" for a, b in runs)
+    return _balanced_sum([f"between(n,{a},{b})" if a != b else f"eq(n,{a})" for a, b in runs])
 
 
 def retime(seg: Segment, out: Output) -> tuple[float, float, list[str]]:
@@ -330,7 +344,7 @@ def retime(seg: Segment, out: Output) -> tuple[float, float, list[str]]:
     # setpts also stamps end-of-stream by evaluating at N = number of kept frames, so the last
     # term puts EOF at the segment's end and fps repeats the final frame up to it.
     steps = [*starts, seg.frames]
-    table = "+".join([str(steps[0])] + [f"gte(N,{m})*{steps[m] - steps[m - 1]}" for m in range(1, len(steps))])
+    table = _balanced_sum([str(steps[0])] + [f"gte(N,{m})*{steps[m] - steps[m - 1]}" for m in range(1, len(steps))])
     filters.append(f"select='{_index_set(picks)}'")
     if clip.reverse:
         filters.append("reverse")
@@ -497,7 +511,7 @@ def write_caption_track(edl: Edl, edl_dir: Path, directory: Path) -> tuple[Path,
     listing = directory / "captions.ffconcat"
     body = "".join(_concat_line(img) + f"duration {n / fps:.6f}\n" for img, n in entries)
     listing.write_text("ffconcat version 1.0\n" + body + _concat_line(entries[-1][0]))
-    return listing, "+".join(window(s, e, fps) for s, e in spans)
+    return listing, _balanced_sum([window(s, e, fps) for s, e in spans])
 
 
 # ---- composite ----
@@ -734,7 +748,7 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
 def grab_frames(video: Path, frames: list[int], size: tuple[int, int]) -> dict[int, Image.Image]:
     """Decode the given output frames, scaled to `size`."""
     wanted = sorted(set(frames))
-    expr = "+".join(f"eq(n,{f})" for f in wanted)
+    expr = _balanced_sum([f"eq(n,{f})" for f in wanted])
     proc = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vf",
                            f"select='{expr}',scale={size[0]}:{size[1]}", "-fps_mode", "passthrough",
                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True)

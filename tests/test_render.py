@@ -344,6 +344,35 @@ class RetimeTests(unittest.TestCase):
         (unannotated,) = [row for row in table.splitlines() if row.startswith("| 5 |")]
         self.assertTrue(unannotated.endswith("| cut |  |  |"), unannotated)
 
+
+@unittest.skipIf(shutil.which("ffmpeg") is None, "ffmpeg not on PATH")
+class LongClipTests(unittest.TestCase):
+    """A clip with more than 100 kept source frames, from a 23.976 fps source like most anime."""
+
+    def test_long_clip_renders_every_source_frame_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="long-clip-test-") as tmp:
+            root = Path(tmp)
+            # Luma encodes the source frame number: Y = 16 + frame.
+            ffmpeg("-f", "lavfi", "-i", "color=c=black:s=32x32:r=24000/1001:d=7,geq=lum='16+N':cb=128:cr=128",
+                   "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv420p",
+                   str(root / "long.mp4"))
+            ffmpeg("-f", "lavfi", "-i", "sine=f=440:d=7:sample_rate=44100", str(root / "song.wav"))
+            edl = {
+                "output": {"width": 32, "height": 32, "fps": 24},
+                "song": {"source": "song.wav", "src_in": 0.0, "src_out": 6.0},
+                "clips": [{"source": "long.mp4", "src_in": 0.0, "timeline_in": 0.0, "timeline_out": 6.0}],
+            }
+            out = root / "out" / "long.mp4"
+            render.render(write_edl(root, "long.json", edl), out)
+            luma = decode_luma(out, 32, 32)[:, 8:24, 8:24].mean(axis=(1, 2))
+            shown = np.round(luma - 16).astype(int).tolist()
+            self.assertEqual(len(shown), 144)
+            steps = np.diff(shown).tolist()
+            self.assertTrue(set(steps) <= {0, 1}, steps)  # never skips or goes back
+            self.assertLessEqual(steps.count(0), 1)  # 23.976 into 24 repeats at most one frame in 6 s
+            self.assertGreaterEqual(shown[-1] - shown[0], 142)
+
+
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
         with self.assertRaises(EdlError) as ctx:
