@@ -30,7 +30,7 @@ Good places to look. These are starting points, not a checklist:
   - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch; see the browser note below.
   - MyAnimeList forum threads. These are readable and full of shot-level fan readings.
   - Tumblr meta posts.
-  - AO3 relationship and freeform tags. A ship's most-used tags map its dynamics and recurring motifs.
+  - AO3 relationship and freeform tags. A ship's most-used tags map its dynamics and recurring motifs. For the works themselves, sort by bookmarks or kudos and prefer fics centered on the ship, which usually list it as their first relationship tag. A ship's tag also lists long ensemble fics where it's a side pairing, and those top every popularity sort.
 - **The song:**
   - Genius annotations.
   - Artist interviews and album notes.
