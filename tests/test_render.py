@@ -58,6 +58,31 @@ RAMP_EDL: dict[str, Any] = {
     ],
 }
 
+# Retiming and keyframed transforms at 24 fps, 90x160. ramp.mp4 frames read back as source frame numbers.
+# 0-23 ramp (0.5x -> 2x linear, -> 0.5x in_out) | 24-29 freeze | 30-47 play, hold, play |
+# 48-59 half speed blended | 60-71 half speed motion-interpolated | 72-95 zoom punch 2x -> 1x with decaying shake
+RETIME_EDL: dict[str, Any] = {
+    "output": {"width": 90, "height": 160, "fps": 24},
+    "song": {"source": "song.wav", "src_in": 0.0, "src_out": 4.0},
+    "clips": [
+        {"source": "ramp.mp4", "src_in": 0.25, "timeline_in": 0.0, "timeline_out": 1.0, "sync": "beat", "why": "ramp",
+         "keyframes": [{"t": 0.0, "speed": 0.5}, {"t": 0.5, "speed": 2.0},
+                       {"t": 1.0, "speed": 0.5, "ease": "in_out"}]},
+        {"source": "ramp.mp4", "src_in": 0.5, "timeline_in": 1.0, "timeline_out": 1.25, "sync": "drop",
+         "why": "freeze", "speed": 0},
+        {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 1.25, "timeline_out": 2.0, "sync": "word", "why": "hold",
+         "keyframes": [{"t": 0.0, "speed": 1}, {"t": 0.25, "speed": 0, "ease": "hold"},
+                       {"t": 0.5, "speed": 1, "ease": "hold"}]},
+        {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 2.0, "timeline_out": 2.5, "sync": "free",
+         "why": "blend", "speed": 0.5, "slowmo": "blend"},
+        {"source": "ramp.mp4", "src_in": 0.0, "timeline_in": 2.5, "timeline_out": 3.0, "sync": "free",
+         "why": "motion", "speed": 0.5, "slowmo": "motion"},
+        {"source": "box.mp4", "src_in": 0.0, "timeline_in": 3.0, "timeline_out": 4.0, "sync": "motion",
+         "why": "punch", "shake_hz": 10,
+         "keyframes": [{"t": 0.0, "zoom": 2.0, "shake": 0.04}, {"t": 0.5, "zoom": 1.0, "shake": 0.0, "ease": "out"}]},
+    ],
+}
+
 
 def ffmpeg(*args: str) -> None:
     subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
@@ -74,6 +99,8 @@ def make_sources(root: Path) -> None:
     ffmpeg("-f", "lavfi", "-i", "color=c=yellow:s=16x16", "-frames:v", "1", str(root / "dot.png"))
     ffmpeg("-f", "lavfi", "-i", "color=c=black:s=64x36:r=24:d=2,geq=lum='16+4*N':cb=128:cr=128",
            "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv420p", str(root / "ramp.mp4"))
+    ffmpeg("-f", "lavfi", "-i", "color=c=gray:s=320x180:r=24:d=2,drawbox=x=140:y=70:w=40:h=40:color=red:t=fill",
+           "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12", "-pix_fmt", "yuv420p", str(root / "box.mp4"))
 
 
 def decode_rgb(video: Path, width: int, height: int) -> np.ndarray:
@@ -222,6 +249,99 @@ class RenderTests(unittest.TestCase):
         self.assertGreater(tone(song, 880, 0.2, 1.2), 5 * tone(song, 440, 0.2, 1.2))  # 2x speed doubles pitch
 
 
+def ramp_advance(t: float) -> float:
+    """Source seconds after `t` s of RETIME_EDL's ramp clip, integrated numerically (Simpson, exact for cubics)."""
+    def speed(x: float) -> float:
+        if x < 0.5:
+            return 0.5 + 1.5 * x / 0.5
+        u = (x - 0.5) / 0.5
+        return 2.0 - 1.5 * u * u * (3 - 2 * u)
+
+    def simpson(a: float, b: float, steps: int = 64) -> float:
+        h = (b - a) / steps
+        return h / 3 * sum((1 if k in (0, steps) else 4 if k % 2 else 2) * speed(a + k * h) for k in range(steps + 1))
+
+    return simpson(0, min(t, 0.5)) + (simpson(0.5, t) if t > 0.5 else 0.0)
+
+
+@unittest.skipIf(shutil.which("ffmpeg") is None, "ffmpeg not on PATH")
+class RetimeTests(unittest.TestCase):
+    tmp: tempfile.TemporaryDirectory[str]
+    root: Path
+    luma: np.ndarray
+    frames: np.ndarray
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory(prefix="retime-test-")
+        cls.root = Path(cls.tmp.name)
+        make_sources(cls.root)
+        out = cls.root / "out" / "retime.mp4"
+        render.render(write_edl(cls.root, "retime.json", RETIME_EDL), out, jobs=3)
+        cls.luma = decode_luma(out, 90, 160)
+        cls.frames = decode_rgb(out, 90, 160)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def source_frames(self, start: int, end: int) -> list[float]:
+        """Source frame shown by output frames [start, end) of the ramp clips (luma = 16 + 4 * frame)."""
+        return [float(v) for v in (self.luma[start:end, 40:120, 20:70].mean(axis=(1, 2)) - 16) / 4]
+
+    def test_speed_ramp_follows_the_integrated_curve(self) -> None:
+        self.assertEqual(len(self.luma), 96)
+        expected = [6 + int(np.floor(ramp_advance(j / 24) * 24 + 1e-6)) for j in range(24)]
+        self.assertEqual([round(v) for v in self.source_frames(0, 24)], expected)
+        self.assertEqual(expected[:3], [6, 6, 7])  # starts at half speed: frames repeat
+        self.assertEqual(expected[12] - expected[11], 2)  # the middle runs at 2x: frames skip
+
+    def test_freeze_and_hold(self) -> None:
+        self.assertEqual([round(v) for v in self.source_frames(24, 30)], [12] * 6)
+        self.assertEqual([round(v) for v in self.source_frames(30, 48)],
+                         [0, 1, 2, 3, 4, 5, 6, 6, 6, 6, 6, 6, 6, 7, 8, 9, 10, 11])
+
+    def test_smooth_slow_motion_makes_in_between_frames(self) -> None:
+        halves = [j / 2 for j in range(12)]
+        for start in (48, 60):  # blend, then motion interpolation
+            got = self.source_frames(start, start + 12)
+            self.assertTrue(all(abs(g - h) < 0.2 for g, h in zip(got, halves)), (start, got))
+
+    def test_zoom_punch_and_shake(self) -> None:
+        def box(frame: int) -> tuple[float, float, float]:
+            f = self.frames[frame]
+            ys, xs = np.nonzero((f[:, :, 0] > 150) & (f[:, :, 1] < 100))
+            return float(xs.max() - xs.min() + 1), float(xs.mean()), float(ys.mean())
+
+        widths = [box(f)[0] for f in range(72, 96)]
+        self.assertAlmostEqual(widths[0], 40 / (180 * 9 / 16 / 2) * 90, delta=3)  # zoom 2 on the first frame
+        self.assertTrue(all(b <= a + 1 for a, b in zip(widths, widths[1:12])), widths)  # zooming out
+        rest = [box(f) for f in range(84, 96)]  # from t = 0.5: zoom 1, no shake, centred
+        for width, cx, cy in rest:
+            self.assertAlmostEqual(width, 40 / (180 * 9 / 16) * 90, delta=3)
+            self.assertAlmostEqual(cx, 44.5, delta=1)
+            self.assertAlmostEqual(cy, 79.5, delta=1)
+        shaken = [max(abs(box(f)[1] - 44.5), abs(box(f)[2] - 79.5)) for f in range(73, 82)]
+        self.assertGreater(max(shaken), 1.5)
+
+    def test_derived_src_out_is_reported_and_checked(self) -> None:
+        summary = render.render(self.root / "retime.json", None)
+        self.assertIn("clips[0].src_out = 1.5000 (derived from timeline_out and speed)", summary)
+        edl = copy.deepcopy(RETIME_EDL)
+        edl["clips"][0]["src_out"] = 1.0
+        with self.assertRaises(EdlError) as ctx:
+            parse_edl(edl)
+        self.assertIn("clips[0].src_out: 1 s does not match the speed, which reaches source 1.5000 s by timeline_out; "
+                      "set src_out to 1.5000 or leave it out", ctx.exception.problems)
+        edl["clips"][0]["src_out"] = 1.5
+        parse_edl(edl)
+
+    def test_table_describes_motion(self) -> None:
+        table = (self.root / "out" / "edl_table.md").read_text()
+        self.assertIn("| 1 | 0.000–1.000 | 24 | ramp.mp4 | 0.250–1.500 | ramp 0.5–2× | cut | beat | ramp |", table)
+        self.assertIn("| freeze |", table)
+        self.assertIn("1×, keys zoom/shake", table)
+
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
         with self.assertRaises(EdlError) as ctx:
@@ -280,9 +400,24 @@ class EdlValidationTests(unittest.TestCase):
                 render.render(write_edl(root, "edl.json", edl), None)
             problems = ctx.exception.problems
             self.assertIn(f"clips[1].source: file not found: {(root / 'missing.mp4').resolve()}", problems)
-            self.assertIn("clips[3].src_out: 2.800 s is past the end of short.mp4 (1.000 s)", problems)
+            self.assertIn("clips[3]: shows short.mp4 at 2.750 s, past its end (1.000 s)", problems)
             self.assertIn(f"audio[0].source: file not found: {(root / 'dialogue.mp4').resolve()}", problems)
 
+
+    def test_retiming_rules(self) -> None:
+        edl = copy.deepcopy(RETIME_EDL)
+        del edl["clips"][0]["timeline_out"]
+        edl["clips"][0]["src_out"] = 1.5
+        del edl["clips"][1]["timeline_out"]
+        edl["clips"][1]["src_out"] = 0.5
+        edl["clips"][2]["keyframes"][1]["t"] = 0.0
+        edl["clips"][3]["keyframes"] = [{"t": 0.1}]
+        problems = self.problems(edl)
+        self.assertIn("clips[0].keyframes: a speed curve needs timeline_out; src_out is derived from it", problems)
+        self.assertIn("clips[1].src_out: must be after src_in (0.5), got 0.5", problems)
+        self.assertIn("clips[1].speed: a freeze (speed 0) needs timeline_out", problems)
+        self.assertIn("clips[2].keyframes[1].t: must be after the previous keyframe, got 0", problems)
+        self.assertIn("clips[3].keyframes[0]: sets none of speed, zoom, x, y, shake", problems)
 
 class CaptionLayoutTests(unittest.TestCase):
     def test_reveal_units_map_to_characters(self) -> None:

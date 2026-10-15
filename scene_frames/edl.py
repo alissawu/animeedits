@@ -12,18 +12,35 @@ are errors, so typos never pass silently.
             the picture is cut to fit the audio, never the reverse. speed resamples like a
             turntable, so sped-up audio is also pitched up. Fades are seconds of output.
             The final mix goes through a peak limiter at -0.45 dBFS.
-  clips     [{source, src_in, src_out, timeline_in, sync, why, speed=1, reverse=false,
-              crop, color, transition}], in timeline order, never overlapping.
-            A clip lasts (src_out - src_in) / speed on the timeline. Time not covered by
-            a clip is black. src_in picks the source frame nearest to that time.
+  clips     [{source, src_in, timeline_in, timeline_out, src_out, sync, why, speed=1,
+              reverse=false, slowmo="repeat", crop, keyframes, shake_hz=12, color,
+              transition}], in timeline order, never overlapping. Time not covered by a
+            clip is black. src_in picks the source frame nearest to that time.
+            Length: timeline_out - timeline_in, or (src_out - src_in) / speed when there is
+            no timeline_out (constant speed only). With both, src_out must match where the
+            speed has carried the source by timeline_out; leave it out and it is derived
+            (--check prints it, edl_table.md shows it). speed 0 freezes on src_in.
             sync: what the cut lands on: beat, drop, word, phrase_end, motion or free.
             why: what the cut means and why it is here. The renderer does not interpret
             sync or why; edl_table.md and proof.jpg show them for critique.
-            crop {zoom=1, x=0.5, y=0.5, end=null, ease="linear"}: the largest window of
-            the output's aspect ratio, divided by zoom (>= 1), centred on the source point
-            (x, y) as fractions of width and height, kept inside the frame. end
-            {zoom, x, y} animates the window over the clip; ease is linear, in, out or
-            in_out.
+            crop {zoom=1, x=0.5, y=0.5}: the largest window of the output's aspect ratio,
+            divided by zoom (>= 1), centred on the source point (x, y) as fractions of
+            width and height, kept inside the frame.
+            keyframes [{t, ease="linear", speed, zoom, x, y, shake}]: t is seconds from the
+            clip's start on the output timeline, strictly increasing. A key sets any of
+            the properties. Each property moves from its previous key to this one with
+            `ease`: linear, in, out, in_out, or hold (keep the old value until t, then
+            jump). Before its first key a property has that key's value, after its last
+            key the last value, and with no keys the clip's speed / crop / no shake.
+            Speed keys make ramps (slow, fast, slow around a hit) and freezes (speed 0,
+            entered with hold); the source span is the integral of the speed curve.
+            shake is a two-axis wobble at shake_hz, its amplitude a fraction of the
+            output's shorter side; key it down to 0 to decay it. The window stays inside
+            the frame, so zoom in a little to give a shake room.
+            slowmo: where in-between frames of slowed footage come from. repeat (default)
+            holds the latest source frame; blend crossfades neighbours; motion uses
+            motion-compensated interpolation (ffmpeg minterpolate). Anime is usually drawn
+            on 2s or 3s (8-12 drawings a second), so blend and motion can smear line art.
             color {brightness=0 (-1..1), contrast=1 (0..3), saturation=1 (0..3),
             tint={color: "#rrggbb", amount: 0..1}}: tint mixes every pixel toward color.
             transition {type="cut", frames, color="white"}: how the clip enters.
@@ -54,6 +71,7 @@ are errors, so typos never pass silently.
             fades to black; the last frame is black.
   title, notes: optional free text.
 """
+from collections.abc import Callable
 import dataclasses
 from dataclasses import dataclass, field
 import difflib
@@ -65,8 +83,10 @@ import types
 from typing import Literal, Union, cast, get_args, get_origin, get_type_hints
 
 Sync = Literal["beat", "drop", "word", "phrase_end", "motion", "free"]
-Ease = Literal["linear", "in", "out", "in_out"]
+Ease = Literal["linear", "in", "out", "in_out", "hold"]
+SlowMo = Literal["repeat", "blend", "motion"]
 
+ANIMATED = ("speed", "zoom", "x", "y", "shake")
 DUCK_RAMP = 0.08
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
@@ -104,16 +124,21 @@ class AudioLayer:
 
 
 @dataclass(frozen=True)
-class Framing:
+class Crop:
     zoom: float = 1.0
     x: float = 0.5
     y: float = 0.5
 
 
 @dataclass(frozen=True)
-class Crop(Framing):
-    end: Framing | None = None
+class Keyframe:
+    t: float
     ease: Ease = "linear"
+    speed: float | None = None
+    zoom: float | None = None
+    x: float | None = None
+    y: float | None = None
+    shake: float | None = None
 
 
 @dataclass(frozen=True)
@@ -141,13 +166,17 @@ class Transition:
 class Clip:
     source: str
     src_in: float
-    src_out: float
     timeline_in: float
     sync: Sync
     why: str
+    timeline_out: float | None = None
+    src_out: float | None = None
     speed: float = 1.0
     reverse: bool = False
+    slowmo: SlowMo = "repeat"
     crop: Crop = field(default_factory=Crop)
+    keyframes: tuple[Keyframe, ...] = ()
+    shake_hz: float = 12.0
     color: Color = field(default_factory=Color)
     transition: Transition = field(default_factory=Transition)
 
@@ -232,8 +261,72 @@ def output_frames(edl: Edl) -> int:
 
 def clip_frames(clip: Clip, fps: int) -> tuple[int, int]:
     """[start, end) output frames of a clip."""
-    end = clip.timeline_in + (clip.src_out - clip.src_in) / clip.speed
+    if clip.timeline_out is not None:
+        end = clip.timeline_out
+    elif clip.src_out is not None and clip.speed > 0:
+        end = clip.timeline_in + (clip.src_out - clip.src_in) / clip.speed
+    else:
+        raise ValueError("a clip needs timeline_out, or src_out with a speed above 0")
     return to_frame(clip.timeline_in, fps), to_frame(end, fps)
+
+
+def track(clip: Clip, name: str) -> list[tuple[float, float, Ease]]:
+    """(t, value, ease) of the keyframes that set property `name`."""
+    points = []
+    for key in clip.keyframes:
+        value = getattr(key, name)
+        if value is not None:
+            points.append((key.t, float(value), key.ease))
+    return points
+
+
+def speed_range(clip: Clip) -> tuple[float, float]:
+    values = [v for _, v, _ in track(clip, "speed")] or [clip.speed]
+    return min(values), max(values)
+
+
+# Integrals from 0 to u of the ease curves on u in [0, 1), turning a speed curve into source time.
+_EASE_INTEGRAL: dict[str, Callable[[float], float]] = {
+    "linear": lambda u: u * u / 2,
+    "in": lambda u: u ** 3 / 3,
+    "out": lambda u: u * u - u ** 3 / 3,
+    "in_out": lambda u: u ** 3 - u ** 4 / 2,
+    "hold": lambda u: 0.0,
+}
+
+
+def advance(clip: Clip, t: float) -> float:
+    """Source seconds played in the first `t` output seconds of the clip: the integral of its speed."""
+    points = track(clip, "speed")
+    if not points:
+        return clip.speed * t
+    first_t, first_v, _ = points[0]
+    total = first_v * min(t, first_t)
+    for (a, va, _), (b, vb, ease) in zip(points, points[1:]):
+        if t <= a:
+            break
+        u = (min(t, b) - a) / (b - a)
+        total += (b - a) * (va * u + (vb - va) * _EASE_INTEGRAL[ease](u))
+    last_t, last_v, _ = points[-1]
+    return total + last_v * max(0.0, t - last_t)
+
+
+def source_offset(clip: Clip, fps: int, frame: int) -> float:
+    """Seconds after src_in of the source moment shown at output `frame` of the clip.
+
+    Frames past the clip's end continue at its final speed (crossfade handles). A reversed
+    clip plays the same source span backwards, ending on src_in.
+    """
+    if not clip.reverse:
+        return advance(clip, frame / fps)
+    start, end = clip_frames(clip, fps)
+    return advance(clip, (end - start - 1) / fps) - advance(clip, frame / fps)
+
+
+def source_end(clip: Clip, fps: int) -> float:
+    """The clip's effective src_out: where its speed has carried the source by its last frame's end."""
+    start, end = clip_frames(clip, fps)
+    return clip.src_in + advance(clip, (end - start) / fps)
 
 
 def span_frames(timeline_in: float, timeline_out: float, fps: int) -> tuple[int, int]:
@@ -374,10 +467,10 @@ def check(edl: Edl) -> list[str]:
     def color(value: str, path: str) -> None:
         need(HEX_COLOR.fullmatch(value) is not None, path, f'must look like "#rrggbb", got {value!r}')
 
-    def framing(f: Framing, path: str) -> None:
-        within(f.zoom, 1, 8, f"{path}.zoom")
-        within(f.x, 0, 1, f"{path}.x")
-        within(f.y, 0, 1, f"{path}.y")
+    def framing(zoom: float | None, x: float | None, y: float | None, path: str) -> None:
+        for name, value, lo, hi in (("zoom", zoom, 1, 8), ("x", x, 0, 1), ("y", y, 0, 1)):
+            if value is not None:
+                within(value, lo, hi, f"{path}.{name}")
 
     def source_range(src_in: float, src_out: float, path: str) -> None:
         need(src_in >= 0, f"{path}.src_in", f"must be >= 0, got {src_in:g}")
@@ -408,35 +501,71 @@ def check(edl: Edl) -> list[str]:
     prev_end = 0
     for i, clip in enumerate(edl.clips):
         path = f"clips[{i}]"
-        source_range(clip.src_in, clip.src_out, path)
+        before_clip = len(p)
+        need(clip.src_in >= 0, f"{path}.src_in", f"must be >= 0, got {clip.src_in:g}")
         need(clip.timeline_in >= 0, f"{path}.timeline_in", f"must be >= 0, got {clip.timeline_in:g}")
-        within(clip.speed, 0.05, 20, f"{path}.speed")
+        within(clip.speed, 0, 20, f"{path}.speed")
+        within(clip.shake_hz, 0.1, 60, f"{path}.shake_hz")
         need(clip.why.strip() != "", f"{path}.why", "must say what the cut means and why it is here")
-        framing(clip.crop, f"{path}.crop")
-        if clip.crop.end is not None:
-            framing(clip.crop.end, f"{path}.crop.end")
+        framing(clip.crop.zoom, clip.crop.x, clip.crop.y, f"{path}.crop")
         within(clip.color.brightness, -1, 1, f"{path}.color.brightness")
         within(clip.color.contrast, 0, 3, f"{path}.color.contrast")
         within(clip.color.saturation, 0, 3, f"{path}.color.saturation")
         if clip.color.tint is not None:
             color(clip.color.tint.color, f"{path}.color.tint.color")
             within(clip.color.tint.amount, 0, 1, f"{path}.color.tint.amount")
-        if clip.src_out <= clip.src_in or not 0.05 <= clip.speed <= 20:
+        for k, key in enumerate(clip.keyframes):
+            kp = f"{path}.keyframes[{k}]"
+            if k == 0:
+                need(key.t >= 0, f"{kp}.t", f"must be >= 0, got {key.t:g}")
+            else:
+                need(key.t > clip.keyframes[k - 1].t, f"{kp}.t", f"must be after the previous keyframe, got {key.t:g}")
+            need(any(getattr(key, name) is not None for name in ANIMATED), kp, f"sets none of {', '.join(ANIMATED)}")
+            if key.speed is not None:
+                within(key.speed, 0, 20, f"{kp}.speed")
+            framing(key.zoom, key.x, key.y, kp)
+            if key.shake is not None:
+                within(key.shake, 0, 0.25, f"{kp}.shake")
+        if clip.timeline_out is None:
+            if clip.src_out is None:
+                p.append(f"{path}: give timeline_out, src_out or both")
+            else:
+                need(clip.src_out > clip.src_in, f"{path}.src_out", f"must be after src_in ({clip.src_in:g}), got {clip.src_out:g}")
+            need(clip.speed > 0, f"{path}.speed", "a freeze (speed 0) needs timeline_out")
+            need(not track(clip, "speed"), f"{path}.keyframes", "a speed curve needs timeline_out; src_out is derived from it")
+        else:
+            need(clip.timeline_out > clip.timeline_in, f"{path}.timeline_out",
+                 f"must be after timeline_in ({clip.timeline_in:g}), got {clip.timeline_out:g}")
+            if clip.src_out is not None:
+                need(clip.src_out >= clip.src_in, f"{path}.src_out", f"must not be before src_in ({clip.src_in:g})")
+        if len(p) > before_clip:
             continue
         start, end = clip_frames(clip, fps)
         length = end - start
         if length < 1:
-            p.append(f"{path}: lasts {_s((clip.src_out - clip.src_in) / clip.speed)}, under one frame at {fps} fps")
+            p.append(f"{path}: lasts {_s((end - start) / fps)} after snapping, under one frame at {fps} fps")
             continue
+        if clip.keyframes:
+            # One frame of slack: keys written at the unsnapped length should not fail.
+            need(clip.keyframes[-1].t <= (length + 1) / fps + 1e-6, f"{path}.keyframes",
+                 f"the last keyframe ({_s(clip.keyframes[-1].t)}) is past the clip's {_s(length / fps)} length")
+        if clip.timeline_out is not None and clip.src_out is not None:
+            derived = source_end(clip, fps)
+            need(abs(derived - clip.src_out) <= 0.5 * speed_range(clip)[1] / fps + 1e-6, f"{path}.src_out",
+                 f"{clip.src_out:g} s does not match the speed, which reaches source {derived:.4f} s by timeline_out; "
+                 f"set src_out to {derived:.4f} or leave it out")
         need(end <= total, path,
              f"ends at {_s(end / fps)} (frame {end}), after the song window ends at {_s(duration)} (frame {total}); "
              "the picture is cut to fit the audio")
         if i > 0 and start < prev_end:
             before = edl.clips[i - 1]
-            fix = before.src_in + (start / fps - before.timeline_in) * before.speed
+            if before.timeline_out is not None:
+                fix = f"clips[{i - 1}].timeline_out = {start / fps:.4f}"
+            else:
+                fix = f"clips[{i - 1}].src_out = {before.src_in + (start / fps - before.timeline_in) * before.speed:.4f}"
             p.append(f"{path}: starts at {_s(start / fps)} (frame {start}), {prev_end - start} frame(s) before "
                      f"clips[{i - 1}] ends at {_s(prev_end / fps)}; clips must be in timeline order without overlap "
-                     f"(e.g. clips[{i - 1}].src_out = {fix:.4f})")
+                     f"(e.g. {fix})")
         t = clip.transition
         if t.type == "cut":
             need(t.frames == 0, f"{path}.transition.frames", "a cut has no frames; use type flash or crossfade")
@@ -447,8 +576,9 @@ def check(edl: Edl) -> list[str]:
     if not p:
         for i, clip in enumerate(edl.clips):
             handle = crossfade_handle(edl, i)
-            need(not clip.reverse or clip.src_in - handle * clip.speed / fps >= 0, f"clips[{i}]",
-                 f"the next clip's {handle}-frame crossfade plays this reversed clip past source time 0")
+            start, end = clip_frames(clip, fps)
+            need(not clip.reverse or clip.src_in + source_offset(clip, fps, end - start + handle - 1) >= -1e-9,
+                 f"clips[{i}]", f"the next clip's {handle}-frame crossfade plays this reversed clip past source time 0")
 
     for i, layer in enumerate(edl.audio):
         path = f"audio[{i}]"

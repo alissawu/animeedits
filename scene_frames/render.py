@@ -9,12 +9,14 @@ Writes OUT.mp4, proof.jpg and edl_table.md, and keeps segments in render_cache/ 
 OUT.mp4 so re-renders only redo changed clips. The schema is documented in edl.py.
 """
 import argparse
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import hashlib
 import itertools
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -24,12 +26,12 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-from edl import (DUCK_RAMP, Caption, Clip, Color, Crop, Edl, EdlError, Output, clip_frames, crossfade_handle,
-                 load_edl, output_frames, reveal_frames, span_frames, to_frame)
+from edl import (DUCK_RAMP, Caption, Clip, Color, Edl, EdlError, Output, clip_frames, crossfade_handle, load_edl,
+                 output_frames, reveal_frames, source_end, source_offset, span_frames, speed_range, to_frame, track)
 
 SAMPLE_RATE = 48000
 CACHE_DIR = "render_cache"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 LIMIT = 0.95  # master peak limit, about -0.45 dBFS
 # Tag frames instead of passing -colorspace to the encoder, which makes ffmpeg convert untagged input.
 TAG_BT709 = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
@@ -161,13 +163,13 @@ def check_sources(edl: Edl, edl_dir: Path) -> tuple[dict[Path, Probe], list[str]
             kind = "is a still image (use an overlay)" if pr.image else "has no video stream"
             problems.append(f"{path}.source: {clip.source} {kind}")
             continue
-        if note := overrun(pr, clip.src_out, clip.source):
-            problems.append(f"{path}.src_out: {note}")
         handle = crossfade_handle(edl, i)
         start, end = clip_frames(clip, fps)
-        if handle and not clip.reverse and (
-                note := overrun(pr, clip.src_in + (end - start + handle) * clip.speed / fps, clip.source)):
-            problems.append(f"{path}: the next clip's {handle}-frame crossfade keeps this clip playing, but {note}")
+        # Offsets are monotonic, so the furthest source moment is at the first or the last frame.
+        reach = clip.src_in + max(source_offset(clip, fps, 0), source_offset(clip, fps, end - start + handle - 1))
+        if pr.duration is not None and reach > pr.duration + 1e-6:
+            extra = f" (with the next clip's {handle}-frame crossfade)" if handle else ""
+            problems.append(f"{path}: shows {clip.source} at {reach:.3f} s{extra}, past its end ({pr.duration:.3f} s)")
 
     for i, layer in enumerate(edl.audio):
         path = f"audio[{i}]"
@@ -202,21 +204,24 @@ def check_sources(edl: Edl, edl_dir: Path) -> tuple[dict[Path, Probe], list[str]
 
 @dataclass(frozen=True)
 class Segment:
-    """Frames of the picture track rendered to one cached file; no clip means black."""
+    """Frames [first, first + frames) of a clip, counted from the clip's start (past its end for a
+    crossfade handle), rendered to one cached file. No clip means black."""
     frames: int
     clip: Clip | None = None
     source: Path | None = None
     probe: Probe | None = None
-    start: float = 0.0  # source time of the first frame read
-    framing: Crop = field(default_factory=Crop)
+    first: int = 0
 
     def key(self, out: Output) -> str:
         data: dict[str, object] = {"v": CACHE_VERSION, "frames": self.frames, "out": dataclasses.asdict(out)}
         if self.clip is not None and self.source is not None and self.probe is not None:
             stat = self.source.stat()
-            data.update(source=str(self.source), size=stat.st_size, mtime=stat.st_mtime_ns, start=self.start,
-                        speed=self.clip.speed, reverse=self.clip.reverse, framing=dataclasses.asdict(self.framing),
-                        color=dataclasses.asdict(self.clip.color), probe=dataclasses.asdict(self.probe))
+            start, end = clip_frames(self.clip, out.fps)
+            # Placement, reasoning and transition do not change the pixels of the segment.
+            look = {k: v for k, v in dataclasses.asdict(self.clip).items()
+                    if k not in ("timeline_in", "timeline_out", "src_out", "sync", "why", "transition")}
+            data.update(source=str(self.source), size=stat.st_size, mtime=stat.st_mtime_ns, clip=look,
+                        length=end - start, first=self.first, probe=dataclasses.asdict(self.probe))
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:20]
 
 
@@ -231,14 +236,10 @@ def plan_picture(edl: Edl, edl_dir: Path, probes: dict[Path, Probe]) -> tuple[li
         if start > cursor:
             picture.append(Segment(start - cursor))
         file = resolve(edl_dir, clip.source)
-        picture.append(Segment(end - start, clip, file, probes[file], clip.src_in, clip.crop))
+        picture.append(Segment(end - start, clip, file, probes[file]))
         handle = crossfade_handle(edl, i)
         if handle:
-            final = clip.crop.end or clip.crop
-            hold = Crop(zoom=final.zoom, x=final.x, y=final.y)
-            src = (clip.src_in - handle * clip.speed / fps if clip.reverse
-                   else clip.src_in + (end - start) * clip.speed / fps)
-            handles[i] = Segment(handle, clip, file, probes[file], src, hold)
+            handles[i] = Segment(handle, clip, file, probes[file], first=end - start)
         cursor = end
     total = output_frames(edl)
     if cursor < total:
@@ -246,25 +247,98 @@ def plan_picture(edl: Edl, edl_dir: Path, probes: dict[Path, Probe]) -> tuple[li
     return picture, handles
 
 
-def framing_filter(crop: Crop, frames: int, out: Output, sar: float) -> str:
-    """Crop the largest output-shaped window / zoom around (x, y); animate toward crop.end."""
+TRANSFORM = ("zoom", "x", "y", "shake")
+EASE_EXPR = {"linear": "{u}", "in": "{u}*{u}", "out": "(2*{u}-{u}*{u})", "in_out": "{u}*{u}*(3-2*{u})", "hold": "0"}
+SHAKE_Y_RATIO, SHAKE_Y_PHASE = 1.37, 1.3  # the vertical wobble runs off-beat from the horizontal one
+
+
+def track_expr(points: Sequence[tuple[float, float, str]], base: float, t: str) -> str:
+    """ffmpeg expression for a keyframed property at time `t`, matching edl.py's interpolation."""
+    if not points:
+        return repr(base)
+    expr = repr(points[-1][1])
+    for (t0, v0, _), (t1, v1, ease) in reversed(list(zip(points, points[1:]))):
+        u = f"(({t}-{t0!r})/{t1 - t0!r})"
+        expr = f"if(lt({t},{t1!r}),{v0!r}+{v1 - v0!r}*{EASE_EXPR[ease].format(u=u)},{expr})"
+    return f"if(lt({t},{points[0][0]!r}),{points[0][1]!r},{expr})"
+
+
+def framing_filter(clip: Clip, first: int, out: Output, sar: float) -> str:
+    """Crop the largest output-shaped window / zoom around (x, y), following keyframes and shake."""
     ar = out.width / out.height / sar  # window aspect in stored source pixels
-    if crop.end is None:
+    crop = clip.crop
+    if not any(track(clip, name) for name in TRANSFORM):
         return (f"crop=w='min(iw,ih*{ar!r})/{crop.zoom!r}':h='ow/{ar!r}'"
                 f":x='clip({crop.x!r}*iw-ow/2,0,iw-ow)':y='clip({crop.y!r}*ih-oh/2,0,ih-oh)'")
-    p = f"(in/{frames - 1})" if frames > 1 else "0"
-    ease = {"linear": p, "in": f"{p}*{p}", "out": f"(1-(1-{p})*(1-{p}))", "in_out": f"{p}*{p}*(3-2*{p})"}[crop.ease]
+    # perspective maps a sub-pixel source quad onto the frame, so slow moves do not jitter. Its
+    # `in` counts frames from 1. Every corner expression recomputes the window into st() slots:
+    # 0 time, 1 width, 2 height, 3 shake in output pixels, 4 left, 5 top.
+    hz = clip.shake_hz
+    prelude = ";".join([
+        f"st(0,(in-1+{first})/{out.fps})",
+        f"st(1,min(W,H*{ar!r})/({track_expr(track(clip, 'zoom'), crop.zoom, 'ld(0)')}))",
+        f"st(2,ld(1)/{ar!r})",
+        f"st(3,({track_expr(track(clip, 'shake'), 0.0, 'ld(0)')})*{min(out.width, out.height)})",
+        f"st(4,clip(({track_expr(track(clip, 'x'), crop.x, 'ld(0)')})*W-ld(1)/2"
+        f"+ld(3)*ld(1)/{out.width}*sin(2*PI*{hz!r}*ld(0)),0,W-ld(1)))",
+        f"st(5,clip(({track_expr(track(clip, 'y'), crop.y, 'ld(0)')})*H-ld(2)/2"
+        f"+ld(3)*ld(2)/{out.height}*sin(2*PI*{hz * SHAKE_Y_RATIO!r}*ld(0)+{SHAKE_Y_PHASE}),0,H-ld(2)))",
+    ])
+    corners = {"x0": "ld(4)", "y0": "ld(5)", "x1": "ld(4)+ld(1)", "y1": "ld(5)",
+               "x2": "ld(4)", "y2": "ld(5)+ld(2)", "x3": "ld(4)+ld(1)", "y3": "ld(5)+ld(2)"}
+    return ("perspective=" + ":".join(f"{name}='{prelude};{value}'" for name, value in corners.items())
+            + ":interpolation=cubic:eval=frame")
 
-    def lerp(a: float, b: float) -> str:
-        return f"({a!r}+{b - a!r}*{ease})"
 
-    w = f"(min(W,H*{ar!r})/{lerp(crop.zoom, crop.end.zoom)})"
-    h = f"({w}/{ar!r})"
-    left = f"clip({lerp(crop.x, crop.end.x)}*W-{w}/2,0,W-{w})"
-    top = f"clip({lerp(crop.y, crop.end.y)}*H-{h}/2,0,H-{h})"
-    corners = [left, top, f"{left}+{w}", top, left, f"{top}+{h}", f"{left}+{w}", f"{top}+{h}"]
-    names = ["x0", "y0", "x1", "y1", "x2", "y2", "x3", "y3"]
-    return "perspective=" + ":".join(f"{n}='{e}'" for n, e in zip(names, corners)) + ":interpolation=cubic:eval=frame"
+def _index_set(indices: list[int]) -> str:
+    """select expression true for the given frame numbers, as runs."""
+    runs: list[list[int]] = []
+    for n in sorted(set(indices)):
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    return "+".join(f"between(n,{a},{b})" if a != b else f"eq(n,{a})" for a, b in runs)
+
+
+def retime(seg: Segment, out: Output) -> tuple[float, float, list[str]]:
+    """Seek time, read length and filters that turn the source into exactly seg.frames output frames.
+
+    Python decides which source frame every output frame shows (from edl.source_offset). ffmpeg
+    lays the source on a constant-rate grid, keeps the grid frames used, stamps each with the
+    first output frame that shows it and lets fps repeat it until the next one.
+    """
+    if seg.clip is None or seg.probe is None:
+        raise ValueError("a black segment has no source to retime")
+    clip, fps = seg.clip, out.fps
+    src_fps = seg.probe.fps or 24.0
+    offsets = [source_offset(clip, fps, seg.first + j) for j in range(seg.frames)]
+    lowest = min(offsets)
+    filters = ["setpts=PTS-STARTPTS", f"fps={src_fps!r}"]
+    grid = src_fps
+    speeds = [v for _, v, _ in track(clip, "speed")] or [clip.speed]
+    slowest = min((v for v in speeds if v > 0), default=1.0)
+    if clip.slowmo != "repeat":
+        # Enough in-between frames that the slowest speed still gets a new one each output frame.
+        grid = float(min(8 * src_fps, max(src_fps, math.ceil(fps / slowest))))
+        mode = "blend" if clip.slowmo == "blend" else "mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+        filters.append(f"minterpolate=fps={grid!r}:mi_mode={mode}")
+    picks = [math.floor((o - lowest) * grid + 1e-6) for o in offsets]
+    order = list(dict.fromkeys(picks))  # grid frames in the order they first appear
+    first_use = {n: j for j, n in reversed(list(enumerate(picks)))}
+    starts = [first_use[n] for n in order]
+    # setpts also stamps end-of-stream by evaluating at N = number of kept frames, so the last
+    # term puts EOF at the segment's end and fps repeats the final frame up to it.
+    steps = [*starts, seg.frames]
+    table = "+".join([str(steps[0])] + [f"gte(N,{m})*{steps[m] - steps[m - 1]}" for m in range(1, len(steps))])
+    filters.append(f"select='{_index_set(picks)}'")
+    if clip.reverse:
+        filters.append("reverse")
+    # tpad covers a source that runs a frame or two short; render_segment rejects anything worse.
+    filters += [f"settb=1/{fps}", f"setpts='{table}'", f"fps={fps}",
+                "tpad=stop_mode=clone:stop=2", f"trim=end_frame={seg.frames}"]
+    seek = max(0.0, clip.src_in + lowest - 0.5 / src_fps)
+    return seek, (max(picks) + 1) / grid + 1.0, filters
 
 
 def color_filters(color: Color) -> list[str]:
@@ -288,14 +362,9 @@ def segment_command(seg: Segment, out: Output, file: Path) -> list[str]:
         black = f"color=c=black:s={out.width}x{out.height}:r={out.fps},format=yuv420p,{TAG_BT709}"
         return [*head, "-f", "lavfi", "-i", black, *tail]
     clip, pr = seg.clip, seg.probe
-    # Seek half a source frame early so src_in picks the nearest frame despite timestamp rounding.
-    seek = max(0.0, seg.start - 0.5 / (pr.fps or 24))
-    read = seg.frames * clip.speed / out.fps + 1.0
-    vf = [f"setpts=(PTS-STARTPTS)/{clip.speed!r}", f"fps={out.fps}",
-          "tpad=stop_mode=clone:stop=2", f"trim=end_frame={seg.frames}"]
-    if clip.reverse:
-        vf.append("reverse")
-    vf += [framing_filter(seg.framing, seg.frames, out, pr.sar),
+    # The seek lands half a source frame early so src_in picks the nearest frame despite rounding.
+    seek, read, vf = retime(seg, out)
+    vf += [framing_filter(clip, seg.first, out, pr.sar),
            f"scale={out.width}:{out.height}:flags=lanczos:out_range=tv", "setsar=1", "format=yuv420p"]
     if pr.matrix != "bt709":  # the colorspace filter is exact on neutrals; swscale's matrix change is not
         vf.append(f"colorspace=all=bt709:iall={pr.matrix}:fast=1:format=yuv420p")
@@ -597,6 +666,20 @@ def _transition(clip: Clip) -> str:
     return {"cut": "cut", "flash": f"{t.color} flash {t.frames}f", "crossfade": f"crossfade {t.frames}f"}[t.type]
 
 
+def _motion(clip: Clip) -> str:
+    """Speed, direction and animation of a clip in a few words."""
+    lo, hi = speed_range(clip)
+    parts = ["freeze" if hi == 0 else f"{lo:g}×" if lo == hi else f"ramp {lo:g}–{hi:g}×"]
+    if clip.reverse:
+        parts.append("reversed")
+    keyed = [name for name in ("zoom", "x", "y", "shake") if track(clip, name)]
+    if keyed:
+        parts.append("keys " + "/".join(keyed))
+    if clip.slowmo != "repeat":
+        parts.append(clip.slowmo)
+    return ", ".join(parts)
+
+
 def write_table(edl: Edl, name: str, file: Path) -> None:
     fps, total = edl.output.fps, output_frames(edl)
     song, out = edl.song, edl.output
@@ -612,16 +695,16 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
              f"{f', ending fade to black {edl.ending.fade_to_black:g} s' if edl.ending.fade_to_black else ''}.", ""]
     if edl.notes:
         lines += [edl.notes, ""]
-    lines += ["| # | Time (s) | Frames | Source | Source time (s) | Speed | Enter | Sync | Why |",
+    lines += ["| # | Time (s) | Frames | Source | Source time (s) | Motion | Enter | Sync | Why |",
               "|---|---|---|---|---|---|---|---|---|"]
     cursor = 0
     for i, clip in enumerate(edl.clips):
         a, b = clip_frames(clip, fps)
         if a > cursor:
             lines.append(f"| | {span(cursor, a)} | {a - cursor} | black | | | | | |")
-        speed = f"{clip.speed:g}×" + (" reversed" if clip.reverse else "")
         lines.append(f"| {i + 1} | {span(a, b)} | {b - a} | {_cell(clip.source)} | "
-                     f"{clip.src_in:.3f}–{clip.src_out:.3f} | {speed} | {_transition(clip)} | {clip.sync} | {_cell(clip.why)} |")
+                     f"{clip.src_in:.3f}–{source_end(clip, fps):.3f} | {_motion(clip)} | {_transition(clip)} | "
+                     f"{clip.sync} | {_cell(clip.why)} |")
         cursor = b
     if cursor < total:
         lines.append(f"| | {span(cursor, total)} | {total - cursor} | black | | | | | |")
@@ -675,7 +758,7 @@ def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path) -> None:
         if t.type != "cut":
             shots.append((a + t.frames, f"after {t.type}"))
         title = (f"#{i + 1} · {a / fps:.3f} s · frame {a} · sync {clip.sync} · {_transition(clip)} · "
-                 f"{Path(clip.source).name} {clip.src_in:.3f}–{clip.src_out:.3f} s")
+                 f"{Path(clip.source).name} {clip.src_in:.3f}–{source_end(clip, fps):.3f} s · {_motion(clip)}")
         rows.append((shots, title, clip.why))
         nxt = clip_frames(edl.clips[i + 1], fps)[0] if i + 1 < len(edl.clips) else total
         if b < nxt:
@@ -726,7 +809,8 @@ def run(cmd: list[str], what: str, verbose: bool) -> None:
 
 def render_segment(seg: Segment, out: Output, file: Path, verbose: bool) -> None:
     partial = file.with_name(file.stem + ".partial.mp4")
-    what = f"rendering {seg.source.name} at {seg.start:.3f} s" if seg.source else "rendering black"
+    what = (f"rendering {seg.source.name} from {seg.clip.src_in:.3f} s" if seg.source and seg.clip
+            else "rendering black")
     run(segment_command(seg, out, partial), what, verbose)
     got = count_frames(partial)
     if got != seg.frames:
@@ -751,7 +835,9 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
                f"{len(edl.clips)} clips, {len(edl.audio)} audio layers, {len(edl.overlays)} overlays, "
                f"{len(edl.captions)} captions")
     if out_path is None:
-        return f"{edl_path}: OK, {summary}"
+        derived = [f"  clips[{i}].src_out = {source_end(clip, fps):.4f} (derived from timeline_out and speed)"
+                   for i, clip in enumerate(edl.clips) if clip.src_out is None]
+        return "\n".join([f"{edl_path}: OK, {summary}", *derived])
 
     out_path = out_path.resolve()
     cache = out_path.parent / CACHE_DIR
