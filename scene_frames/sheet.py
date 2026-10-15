@@ -1,19 +1,57 @@
+"""Draw one contact sheet of every shot in a detect.py output directory.
 
-import json,sys
-from PIL import Image,ImageDraw,ImageFont
-S=json.load(open('scenes.json')); L=json.load(open('labels.json')) if len(sys.argv)>1 else {}
-W=480; cols=3
-ims=[Image.open(s['file']) for s in S]
-h=int(W*ims[0].height/ims[0].width); cap=150 if L else 60
-rows=(len(S)+cols-1)//cols
-sheet=Image.new('RGB',(W*cols,(h+cap)*rows),'white'); d=ImageDraw.Draw(sheet)
-try: f=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',26); f2=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',21)
-except: f=f2=ImageFont.load_default()
-import textwrap
-for k,(s,im) in enumerate(zip(S,ims)):
-    x=(k%cols)*W; y=(k//cols)*(h+cap)
-    sheet.paste(im.resize((W,h)),(x,y))
-    d.text((x+8,y+h+4),f"{s['i']}  {s['start']:.1f}-{s['end']:.1f}s",fill='black',font=f)
-    lab=L.get(str(s['i']),'')
-    for j,line in enumerate(textwrap.wrap(lab,38)[:4]): d.text((x+8,y+h+36+j*25),line,fill='#333',font=f2)
-sheet.save('sheet.jpg' if L else 'raw.jpg',quality=90)
+usage: python sheet.py OUT_DIR [--labels labels.json] [--cols 3] [--width 480] [--output sheet.jpg]
+
+Each tile shows the shot's keyframe, ID and time range. --labels takes a JSON
+object mapping shot IDs to text printed under the tiles, e.g. {"4": "fireworks kiss"}.
+For a whole film, use index.py's numbered sheets instead: this loads one image at a time
+but draws a single sheet.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import cast
+
+try:
+    from detect import Shot, positive_int
+    from index import make_sheet
+except ImportError:  # imported as scene_frames.sheet
+    from .detect import Shot, positive_int  # type: ignore[import-not-found,no-redef]
+    from .index import make_sheet  # type: ignore[import-not-found,no-redef]
+
+
+def read_labels(path: Path) -> dict[int, str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
+        raise ValueError(f"{path} must map shot IDs to strings")
+    try:
+        return {int(k): v for k, v in data.items()}
+    except ValueError:
+        raise ValueError(f"{path} has a non-integer shot ID") from None
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("out_dir", type=Path, help="directory holding scenes.json and its frames")
+    ap.add_argument("--labels", type=Path, help="JSON object of shot ID -> text")
+    ap.add_argument("--cols", type=positive_int, default=3)
+    ap.add_argument("--width", type=positive_int, default=480, help="tile width in pixels")
+    ap.add_argument("--output", type=Path, help="default: OUT_DIR/sheet.jpg")
+    a = ap.parse_args()
+    scenes = a.out_dir / "scenes.json"
+    if not scenes.is_file():
+        ap.error(f"no scenes.json in {a.out_dir}; run detect.py first")
+    shots = cast("list[Shot]", json.loads(scenes.read_text()))
+    try:
+        labels = read_labels(a.labels) if a.labels else None
+    except (OSError, ValueError) as e:
+        ap.error(str(e))
+    output = a.output or a.out_dir / "sheet.jpg"
+    make_sheet(shots, a.out_dir, output, cols=a.cols, tile_width=a.width, labels=labels)
+    print(f"{len(shots)} shots -> {output}")
+
+
+if __name__ == "__main__":
+    main()
