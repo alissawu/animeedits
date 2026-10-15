@@ -158,6 +158,13 @@ class CaptionTests(unittest.TestCase):
                 index.caption_sheet(client, [{"i": 1}], self.sheet(tmp), "model", None)
         self.assertEqual(len(calls), 3)
 
+    def test_character_names_follow_the_prompt(self) -> None:
+        reply = {"shots": [{"id": 1, "caption": "x", "characters": [
+            {"name": "possibly Mira", "certain": True}, {"name": "Unidentified man", "certain": True},
+            {"name": "unidentified", "certain": False}, {"name": " Tomo ", "certain": True}]}]}
+        self.assertEqual(index.parse_captions(json.dumps(reply), {1})["1"]["characters"],
+                         [{"name": "Mira", "certain": False}, {"name": "Tomo", "certain": True}])
+
     def test_rejects_malformed_entries(self) -> None:
         for bad in ({"shots": [{"id": 1, "caption": "", "characters": []}]},
                     {"shots": [{"id": 1, "caption": "x", "characters": ["Mira"]}]},

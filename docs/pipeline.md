@@ -22,7 +22,7 @@ Builds numbered contact sheets of keyframes and captions them with Claude in par
 
 ### Captions
 
-Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. `characters` lists everyone a caption names, with `certain: false` for the "possibly"s. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is left to a later text-only pass over shot order and dialogue.
+Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. Nobody is named, even as "possibly", when what's visible contradicts how that character looks, such as a different hair color. `characters` lists everyone a caption names by bare name, with `certain: false` for the "possibly"s, and leaves out the unidentified. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is left to a later text-only pass over shot order and dialogue.
 
 Nothing in the prompt is specific to a show. Two inputs tell the model what it's looking at:
 
