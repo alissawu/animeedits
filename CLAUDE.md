@@ -15,12 +15,11 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 
 ## How to work
 
-How you research, plan and build is up to you. Two things are not:
+How you research, plan and build is up to you. One thing is not: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to and the edit says what you meant it to. Revise until it does.
 
-1. **Pitch before building.** Once you know the song and the source well, pitch 2–3 genuinely different concepts. Each one is a sentence on where the song meets the story, the stretch of song you'd use, and the moment or image pair the edit hinges on. Then wait for the user to pick or redirect.
-2. **Watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to and the edit says what you meant it to. Revise until it does.
+Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (where the song meets the story, the stretch of song, the moment the edit hinges on) and wait for a pick. Otherwise choose the strongest and build it.
 
-Research the show and the song as deeply as the edit needs; subagents work well for this. Research on a show's cast can double as `index.py --context`; the format is in [docs/pipeline.md](docs/pipeline.md#captions).
+Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. Research on a show's cast can double as `index.py --context`; the format is in [docs/pipeline.md](docs/pipeline.md#captions).
 
 Good places to look. These are starting points, not a checklist:
 - **Canon:**
@@ -67,7 +66,7 @@ Things you can't see from the code:
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
   - the render
-  - a short `notes.md` with the pitch the user chose and what you'd change next time
+  - a short `notes.md` with the concept you went with and what you'd change next time
 
 ## Code
 
