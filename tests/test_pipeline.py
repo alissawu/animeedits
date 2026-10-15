@@ -13,6 +13,7 @@ from detect import flash_runs, motion_peaks, positive_int, usable_range
 spec = importlib.util.spec_from_file_location("shot_index", Path(__file__).resolve().parents[1] / "scene_frames/index.py")
 assert spec and spec.loader
 index = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = index
 spec.loader.exec_module(index)
 
 

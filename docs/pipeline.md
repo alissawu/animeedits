@@ -16,7 +16,7 @@ export ANTHROPIC_API_KEY="your key"
 python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
-Captioning uses `ANTHROPIC_API_KEY` if set, otherwise the profile from `ant auth login`.
+Captioning uses `ANTHROPIC_API_KEY` if set, otherwise the profile from `ant auth login`. To caption without an API key, see [Captioning with agents](#captioning-with-agents).
 
 Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Captioning costs API credits; Whisper downloads its model on first use.
 
@@ -54,6 +54,22 @@ The context file looks like this:
 Each cast entry needs identifiers that survive a thumbnail: hair color and style, eye color, outfit, signature accessories, and alternate or monster forms. `## Scenes` and `## Moments` are optional and not used for captions. A file without a non-empty `## Cast` section is rejected.
 
 `--sheet-size N` sets shots per sheet (default 12). Sheets are three 512 px tiles wide, so fewer shots per sheet means larger tiles after the API's downscaling. Dark night scenes caption badly when tiles are small.
+
+### Captioning with agents
+
+`--captioner agent` captions with Claude Code instead of the API, so no key is needed and usage counts against the Claude Code plan. Index builds the sheets as usual. For every sheet without cached captions, it writes `OUT_DIR/caption_jobs.json` and stops before `shots.json`. Transcription and subtitles still run, so the next pass is quick.
+
+The jobs file is self-contained:
+
+- `instructions`: what the agent should do.
+- `prompt`: the exact system prompt the API path uses, with title and cast.
+- `schema`: the reply format.
+- `rerun`: the command to run afterwards.
+- `jobs`: for each sheet, the image path, the question to answer (`request`, the shot IDs on that sheet) and the `reply` path to write the JSON to.
+
+In Claude Code, ask for something like "caption the jobs in OUT_DIR/caption_jobs.json with one Haiku subagent per sheet, then run its rerun command". Index validates each reply exactly like an API reply and caches it. It names any reply it rejects, which stays pending until it's rewritten. Once every sheet has captions, it writes `shots.json` and deletes the jobs file.
+
+Reply filenames include a hash of the sheet's cache signature, so a reply written for an older sheet, title, cast or prompt is never picked up. Agent captions are cached separately from `--captioner api` captions, so switching captioners re-captions. Subagents don't get the API's structured-output guarantee, so malformed replies are possible and get rejected.
 
 ### Dialogue
 
