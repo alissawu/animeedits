@@ -40,9 +40,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Browser, Page, sync_playwright
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from patchright.sync_api import Browser, Page, sync_playwright
+from patchright.sync_api import Error as PlaywrightError
+from patchright.sync_api import TimeoutError as PlaywrightTimeout
 
 USER_CHROME_DATA = Path(os.environ.get("ANIMEEDITS_USER_CHROME_DATA",
                                        Path.home() / "Library/Application Support/Google/Chrome"))

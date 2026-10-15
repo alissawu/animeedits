@@ -1,9 +1,10 @@
+Dependencies are in `tools/requirements.txt` and installed in the repo's `.venv` (setup is in CLAUDE.md). Browser automation uses patchright, a drop-in fork of Playwright.
+
 # fetch.py
 
-Fetch a web page as markdown. Tries a plain request with a real browser user agent, falls back to headless Chromium if the page looks like a login wall or block page.
+Fetch a web page as markdown. Tries a plain request with a real browser user agent, falls back to your installed Chrome, run headless through patchright, if the page looks like a login wall or block page.
 
 ```
-pip install httpx trafilatura playwright && playwright install chromium
 python tools/fetch.py https://old.reddit.com/r/ChainsawMan/
 ```
 
@@ -18,7 +19,6 @@ A fallback for pages the built-in web search and fetch can't read: Reddit, TikTo
 **`--profile`: a separate headless Chrome** with its own profile in `~/.animeedits-chrome` and only the logins you give it. It's a background-only process (no window, no Dock icon) with no Allow prompt. Use it when your Chrome isn't available.
 
 ```
-pip install playwright
 python tools/browser.py text URL [--profile]   # title, final URL and visible text
 python tools/browser.py html URL [--profile]   # rendered HTML, e.g. to pull video links from TikTok search
 python tools/browser.py stop                   # stop the helper (and the headless profile Chrome)

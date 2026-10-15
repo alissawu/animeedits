@@ -45,7 +45,7 @@ Good places to look. These are starting points, not a checklist:
 
 ## Tools
 
-Setup: `pip install -r scene_frames/requirements.txt`, plus ffmpeg/ffprobe on PATH.
+Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/python` wherever these docs say `python`, since an activated venv doesn't carry over between shell commands. To rebuild it: `uv venv --python 3.12 .venv && uv pip install --python .venv -r scene_frames/requirements.txt -r tools/requirements.txt mypy`. ffmpeg and ffprobe must be on PATH.
 
 | Need | Command | Docs |
 |---|---|---|
@@ -62,7 +62,7 @@ Things you can't see from the code:
 
 ## Files
 
-- `media/`: songs and source video. `out/<edit-name>/`: everything a run produces (research notes, indexes, song map, EDL, renders). Both are gitignored. Never commit media.
+- `media/`: songs and source video. `out/<edit-name>/`: everything a run produces (research notes, indexes, song map, EDL, renders). Both are gitignored, so they exist only in the main checkout: make edits there, not in a git worktree. Never commit media.
 - `breakdowns/`: dissected reference edits, the taste reference.
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
@@ -71,4 +71,4 @@ Things you can't see from the code:
 
 ## Code
 
-Python 3.11+, full type hints, strict mypy (`scene_frames/mypy.ini`). Tests: `python -m unittest discover -s tests`.
+Python 3.11+, full type hints, strict mypy (`scene_frames/mypy.ini`). Tests: `.venv/bin/python -m unittest discover -s tests`.
