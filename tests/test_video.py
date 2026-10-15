@@ -184,8 +184,7 @@ class SyntheticVideoTests(unittest.TestCase):
         def create(**kwargs: Any) -> SimpleNamespace:
             calls.append(kwargs)
             ids = [int(i) for i in kwargs["messages"][0]["content"][1]["text"].split(":")[1].split(",")]
-            text = json.dumps({"shots": [{"id": i, "caption": f"shot {i}", "characters": [], "scene": None}
-                                         for i in ids]})
+            text = json.dumps({"shots": [{"id": i, "caption": f"shot {i}", "characters": []} for i in ids]})
             return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)], stop_reason="end_turn")
 
         class Anthropic:
@@ -214,7 +213,7 @@ class SyntheticVideoTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (out / "sheets").iterdir()), ["sheet_0001.jpg", "sheet_0002.jpg"])
         self.assertEqual([s["caption"] for s in shots], ["shot 1", "shot 2", "shot 3"])
         self.assertEqual(set(shots[0]), {"id", "start", "end", "keyframe", "first_frame", "last_frame", "caption",
-                                         "characters", "scene", "motion", "flashes", "look", "subtitles"})
+                                         "characters", "motion", "flashes", "look", "subtitles"})
         self.assertEqual([[line["text"] for line in s["subtitles"]] for s in shots],
                          [["First line"], ["Spans the cut"], ["Spans the cut"]])
         for shot in shots:
@@ -224,14 +223,24 @@ class SyntheticVideoTests(unittest.TestCase):
         self.assertEqual(run("--subs-stream", "0"), shots)
         self.assertEqual(len(calls), 2, "a rerun is served from the caches")
 
+        run("--title", "Test Pattern")
+        self.assertEqual(len(calls), 4, "a new title means new captions")
+        self.assertIn("The video is from Test Pattern.", calls[-1]["system"][0]["text"])
+
         context = self.root / "story.md"
-        context.write_text("# Characters\n- Reze: purple hair\n")
+        cast = "## Cast\n- Box: white square, orange and black patches\n"
+        context.write_text(f"# Test Pattern\n\n{cast}")
         run("--context", str(context))
-        self.assertEqual(len(calls), 4, "new context means new captions")
-        self.assertIn("Reze: purple hair", calls[-1]["system"][-1]["text"])
+        self.assertEqual(len(calls), 6, "the title comes from the # heading; the new cast means new captions")
+        self.assertIn("<cast>\n- Box: white square", calls[-1]["system"][0]["text"])
+
+        context.write_text(f"# Test Pattern\n\n{cast}\n## Scenes\n- Three color fields.\n")
+        run("--context", str(context))
+        self.assertEqual(len(calls), 6, "only the cast is in the prompt, so other sections don't invalidate it")
+        self.assertNotIn("Three color fields", calls[-1]["system"][0]["text"])
 
         run("--context", str(context), "--sheet-size", "3")
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 7)
         self.assertEqual([p.name for p in (out / "sheets").iterdir()], ["sheet_0001.jpg"], "stale sheets removed")
 
     def test_index_needs_audio_to_transcribe(self) -> None:

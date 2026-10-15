@@ -13,14 +13,43 @@ Writes `scenes.json` and `scene_0004_005.90s.jpg`-style stills. Omit `--sample` 
 ## Index
 ```sh
 export ANTHROPIC_API_KEY="your key"
-python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context story.md
+python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
 Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Captioning costs API credits; Whisper downloads its model on first use.
 
 ### Captions
 
-`--context FILE` is markdown the captioner reads before every sheet: character names with what they look like, and scene or chapter summaries. With it, captions name characters ("Reze", not "girl with purple hair"), list them in `characters`, and tag the likely `scene`. Without it, `characters` is empty and `scene` is null. Text inside the frames is never treated as an instruction. The context is a cached prompt block, so a long file is billed at full price on the first sheet and at the cache rate after that, when it's above the model's minimum cacheable length.
+Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. `characters` lists everyone a caption names, with `certain: false` for the "possibly"s. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is left to a later text-only pass over shot order and dialogue.
+
+Nothing in the prompt is specific to a show. Two inputs tell the model what it's looking at:
+
+- `--context FILE`: the usual input, a markdown file from a research step for the title. Only its `## Cast` section goes into the prompt, so sheets stay cheap, and the model matches people against the visual identifiers there.
+- `--title TEXT`: the light option when there's no context file, e.g. `--title "Show Name, season 2"`. It defaults to the context file's `# ` heading.
+
+Both are in the caption cache signature (the cast section by hash), so changing either re-captions. Editing other sections of the context file doesn't. The system prompt is cached, which only matters once the cast makes it longer than the model's minimum cacheable length.
+
+The context file looks like this:
+
+```markdown
+# Show title
+
+## Cast
+### Character name
+- Hair: color, length, style
+- Eyes: color, anything distinctive
+- Outfit: what they usually wear, and alternates
+- Accessories: anything signature, like a choker, earrings, glasses or a scar
+- Other forms: transformations, monster or armored forms, masks
+
+## Scenes
+...
+
+## Moments
+...
+```
+
+Each cast entry needs identifiers that survive a thumbnail: hair color and style, eye color, outfit, signature accessories, and alternate or monster forms. `## Scenes` and `## Moments` are optional and not used for captions. A file without a non-empty `## Cast` section is rejected.
 
 `--sheet-size N` sets shots per sheet (default 12). Sheets are three 512 px tiles wide, so fewer shots per sheet means larger tiles after the API's downscaling. Dark night scenes caption badly when tiles are small.
 
@@ -40,7 +69,7 @@ An array of shots. Times are seconds relative to the input video, and still path
 |---|---|
 | `id`, `start`, `end` | Shot number and time range (`end` exclusive) |
 | `keyframe`, `first_frame`, `last_frame` | `{time, file}` stills: the best frame, and how the shot starts and ends |
-| `caption`, `characters`, `scene` | From the captioner; `scene` may be null |
+| `caption`, `characters` | From the captioner. `characters` is `[{name, certain}]` |
 | `motion` | `{fps, curve, peaks, mean, max}`: per-frame flow speed in frame widths/s and the times of motion bursts |
 | `flashes` | `[{time, frames}]` bright flashes |
 | `look` | `{luma, hue, saturation, palette}` for matching color grades |
@@ -51,7 +80,7 @@ A line spanning a cut appears in both shots; its word times show which words fal
 
 ### Caching
 
-Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, context file and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
+Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
 
 ## Future stages
 Director takes shots.json, song lyrics/beats and an edit move library. Opus chooses the story and writes an edit decision list (EDL) containing source in/out points, timing and effects.
