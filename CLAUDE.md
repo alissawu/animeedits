@@ -45,7 +45,7 @@ Setup: `pip install -r scene_frames/requirements.txt`, plus ffmpeg/ffprobe on PA
 
 | Need | Command | Docs |
 |---|---|---|
-| Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO OUT_DIR --context FILE --captioner agent` | [pipeline.md](docs/pipeline.md) |
+| Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO OUT_DIR --context FILE` | [pipeline.md](docs/pipeline.md) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
 | Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
 
@@ -54,7 +54,7 @@ Things you can't see from the code:
 - **Dialogue buried under music in footage:** before transcribing, `index.py` skips stretches it thinks have no speech (voice activity detection, or VAD). That also drops lines mixed under a song or loud score. If a scene's dialogue is missing from `shots.json`, rerun with `--no-vad`. `analyze_edit.py` already runs without VAD.
 - **Vertical crops:** a 9:16 crop of 16:9 footage keeps only the middle third. Subjects at the edges disappear, like two hands at either side of the frame. Set each clip's `crop` focus and check it on the proof sheet.
 - **Index each film or episode once.** Reuse its output directory; every stage is cached.
-- **`--captioner agent` needs no API key.** It writes caption jobs for Claude Code subagents.
+- **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in.
 
 ## Files
 
