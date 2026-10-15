@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
@@ -18,6 +18,7 @@ from pathlib import Path
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -48,9 +49,10 @@ TILE_WIDTH = 512  # 3 x 512 px sheets stay inside the 1568 px edge older Claude 
 LABEL_SIZE = 20
 CAPTION_MAX_TOKENS = 16_000
 CAPTION_ATTEMPTS = 3
+CLAUDE_TIMEOUT_S = 600  # one claude -p call per sheet; about 15 s is typical
 CAPTION_JOBS = "caption_jobs.json"
 NO_CREDENTIALS = ("--captioner api calls the Anthropic API, which needs ANTHROPIC_API_KEY or an `ant auth login` "
-                  "profile; Claude Code's sign-in doesn't reach it. --captioner agent captions inside Claude Code "
+                  "profile; Claude Code's sign-in doesn't reach it. --captioner claude captions through Claude Code "
                   "with no key")
 TEXT_SUBTITLE_CODECS = frozenset({"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"})
 
@@ -263,14 +265,18 @@ def read_context(path: Path) -> tuple[str | None, str]:
     return title, section
 
 
-def caption_system(title: str | None, cast: str | None) -> list[TextBlockParam]:
+def caption_prompt(title: str | None, cast: str | None) -> str:
     text = CAPTION_INSTRUCTIONS
     if title:
         text += f"\n\nThe video is from {title}."
     if cast:
         text += f"\n\n{CAST_PREAMBLE}\n\n<cast>\n{cast}\n</cast>"
+    return text
+
+
+def caption_system(title: str | None, cast: str | None) -> list[TextBlockParam]:
     # Identical for every sheet. Below the model's minimum cacheable length this is a no-op.
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    return [{"type": "text", "text": caption_prompt(title, cast), "cache_control": {"type": "ephemeral"}}]
 
 
 def parse_captions(text: str, expected: set[int]) -> dict[str, Caption]:
@@ -309,12 +315,26 @@ def sheet_request(ids: Sequence[int]) -> str:
     return "Shot IDs on this sheet: " + ", ".join(map(str, ids))
 
 
+def with_retries(ask: Callable[[], str], ids: Sequence[int], sheet: Path) -> dict[str, Caption]:
+    """Ask for a sheet's captions until a reply validates. ask raises ValueError for a reply worth retrying."""
+    error: ValueError | None = None
+    for attempt in range(CAPTION_ATTEMPTS):
+        try:
+            return parse_captions(ask(), set(ids))
+        except ValueError as e:
+            error = e
+            if attempt + 1 < CAPTION_ATTEMPTS:
+                time.sleep(2 ** attempt)
+    raise ValueError(f"invalid captions for {sheet.name}: {error}")
+
+
 def caption_sheet(client: Anthropic, group: Sequence[Shot], sheet: Path, model: str,
                   title: str | None = None, cast: str | None = None) -> dict[str, Caption]:
+    """Caption a sheet through the Anthropic API."""
     ids = [s["i"] for s in group]
     image = base64.b64encode(sheet.read_bytes()).decode()
-    error: Exception | None = None
-    for attempt in range(CAPTION_ATTEMPTS):
+
+    def ask() -> str:
         reply = client.messages.create(
             model=model, max_tokens=CAPTION_MAX_TOKENS, system=caption_system(title, cast),
             messages=[{"role": "user", "content": [
@@ -323,15 +343,66 @@ def caption_sheet(client: Anthropic, group: Sequence[Shot], sheet: Path, model: 
             ]}],
             output_config={"format": {"type": "json_schema", "schema": CAPTION_SCHEMA}},
         )
+        if reply.stop_reason != "end_turn":
+            raise ValueError(f"reply stopped with {reply.stop_reason}")
+        return "".join(b.text for b in reply.content if b.type == "text")
+    return with_retries(ask, ids, sheet)
+
+
+def caption_sheet_cli(group: Sequence[Shot], sheet: Path, model: str, title: str | None = None,
+                      cast: str | None = None) -> dict[str, Caption]:
+    """Caption a sheet with `claude -p` on the user's Claude Code sign-in: the same prompt, image and
+    schema as the API path, with no tools, settings, MCP servers or CLAUDE.md loaded."""
+    ids = [s["i"] for s in group]
+    message = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                     "data": base64.b64encode(sheet.read_bytes()).decode()}},
+        {"type": "text", "text": sheet_request(ids)},
+    ]}}
+    cmd = ["claude", "-p", "--model", model, "--system-prompt", caption_prompt(title, cast), "--tools", "",
+           "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--input-format",
+           "stream-json", "--output-format", "stream-json", "--verbose", "--json-schema", json.dumps(CAPTION_SCHEMA)]
+    # Without these, claude would bill an API key instead of the sign-in.
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+
+    def ask() -> str:
         try:
-            if reply.stop_reason != "end_turn":
-                raise ValueError(f"reply stopped with {reply.stop_reason}")
-            return parse_captions("".join(b.text for b in reply.content if b.type == "text"), set(ids))
-        except (ValueError, AttributeError) as e:
-            error = e
-            if attempt + 1 < CAPTION_ATTEMPTS:
-                time.sleep(2 ** attempt)
-    raise ValueError(f"invalid captions for {sheet.name}: {error}")
+            proc = subprocess.run(cmd, input=json.dumps(message) + "\n", capture_output=True, text=True, env=env,
+                                  cwd=sheet.parent, timeout=CLAUDE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise ValueError(f"claude took longer than {CLAUDE_TIMEOUT_S} s") from None
+        events = []
+        for line in proc.stdout.splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+        result = next((e for e in events if isinstance(e, dict) and e.get("type") == "result"), None)
+        if result is None:
+            raise RuntimeError(f"claude exited with {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-500:]}")
+        if result.get("is_error") or result.get("subtype") != "success":
+            raise ValueError(f"claude: {result.get('result') or result.get('subtype')}")
+        # An alias can be remapped in settings; a full model ID must come back as itself.
+        used = list(result.get("modelUsage") or {})
+        if model.startswith("claude-") and model not in used:
+            raise RuntimeError(f"claude ran {', '.join(used) or 'an unknown model'} instead of {model}")
+        return json.dumps(result.get("structured_output"))
+    return with_retries(ask, ids, sheet)
+
+
+def run_captioner(jobs: Sequence[CaptionJob], caption: Callable[[CaptionJob], dict[str, Caption]],
+                  workers: int) -> dict[str, Caption]:
+    """Caption sheets in parallel, caching each as soon as it validates."""
+    def run(job: CaptionJob) -> dict[str, Caption]:
+        result = caption(job)
+        save(job.cache, {"signature": job.signature, "data": result})
+        print(f"captioned {job.sheet.name}", flush=True)
+        return result
+    captions: dict[str, Caption] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for result in pool.map(run, jobs):
+            captions.update(result)
+    return captions
 
 
 def api_client() -> Anthropic:
@@ -354,7 +425,7 @@ def write_caption_jobs(out: Path, jobs: Sequence[CaptionJob], title: str | None,
     save(path, {
         "instructions": AGENT_INSTRUCTIONS,
         "rerun": f"cd {shlex.quote(os.getcwd())} && {shlex.join([sys.executable, *sys.argv])}",
-        "prompt": "".join(block["text"] for block in caption_system(title, cast)),
+        "prompt": caption_prompt(title, cast),
         "schema": CAPTION_SCHEMA,
         "jobs": [{"sheet": str(job.sheet.relative_to(out)), "request": sheet_request(job.ids),
                   "reply": str(job.reply.relative_to(out))} for job in jobs],
@@ -467,9 +538,10 @@ def main() -> None:
     ap.add_argument("video", type=Path)
     ap.add_argument("out_dir", type=Path)
     add_detection_args(ap)
-    ap.add_argument("--captioner", choices=["api", "agent"], default="api",
-                    help="api: call Claude with an API key; agent: write caption_jobs.json for Claude Code agents")
-    ap.add_argument("--caption-model", default="claude-haiku-5-5", help="model for --captioner api")
+    ap.add_argument("--captioner", choices=["api", "claude", "agent"], default="api",
+                    help="api: the Anthropic API (needs a key); claude: `claude -p` on your Claude Code sign-in; "
+                         "agent: write caption_jobs.json for Claude Code agents")
+    ap.add_argument("--caption-model", default="claude-haiku-5-5", help="model for --captioner api and claude")
     ap.add_argument("--title", help="what the video is, e.g. a show and season; default: --context's # heading")
     ap.add_argument("--context", type=Path, help="markdown whose ## Cast section says how to recognize characters")
     ap.add_argument("--sheet-size", type=positive_int, default=12, help="shots per caption sheet")
@@ -532,7 +604,8 @@ def main() -> None:
     for i, group in enumerate(groups, 1):
         sheet = sheets / f"sheet_{i:04d}.jpg"
         make_sheet(group, out, sheet)
-        sig: dict[str, object] = {"model": a.caption_model if a.captioner == "api" else "agent",
+        # The API and claude -p send the same request, so they share captions; agents run whatever model they run.
+        sig: dict[str, object] = {"model": "agent" if a.captioner == "agent" else a.caption_model,
                                   "sheet": sha256(sheet.read_bytes()), "title": title,
                                   "cast": sha256(cast_notes.encode()) if cast_notes else None,
                                   "prompt_version": PROMPT_VERSION}
@@ -561,16 +634,16 @@ def main() -> None:
         replies.mkdir(exist_ok=True)
         jobs_file = write_caption_jobs(out, pending, title, cast_notes)
         print(f"{len(pending)} sheets need captions: follow {jobs_file}", flush=True)
+    elif jobs and a.captioner == "claude":
+        if shutil.which("claude") is None:
+            raise SystemExit("--captioner claude needs Claude Code's `claude` command on PATH")
+        captions.update(run_captioner(
+            jobs, lambda job: caption_sheet_cli(job.shots, job.sheet, a.caption_model, title, cast_notes), a.workers))
     elif jobs:
         with api_client() as client:
-            def run(job: CaptionJob) -> dict[str, Caption]:
-                result = caption_sheet(client, job.shots, job.sheet, a.caption_model, title, cast_notes)
-                save(job.cache, {"signature": job.signature, "data": result})
-                print(f"captioned {job.sheet.name}", flush=True)
-                return result
-            with ThreadPoolExecutor(max_workers=a.workers) as pool:
-                for result in pool.map(run, jobs):
-                    captions.update(result)
+            captions.update(run_captioner(
+                jobs, lambda job: caption_sheet(client, job.shots, job.sheet, a.caption_model, title, cast_notes),
+                a.workers))
 
     dialogue = None
     if audio_stream is not None:
