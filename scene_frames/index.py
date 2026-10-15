@@ -49,6 +49,9 @@ LABEL_SIZE = 20
 CAPTION_MAX_TOKENS = 16_000
 CAPTION_ATTEMPTS = 3
 CAPTION_JOBS = "caption_jobs.json"
+NO_CREDENTIALS = ("--captioner api calls the Anthropic API, which needs ANTHROPIC_API_KEY or an `ant auth login` "
+                  "profile; Claude Code's sign-in doesn't reach it. --captioner agent captions inside Claude Code "
+                  "with no key")
 TEXT_SUBTITLE_CODECS = frozenset({"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"})
 
 CAPTION_INSTRUCTIONS = """\
@@ -319,6 +322,20 @@ def caption_sheet(client: Anthropic, group: Sequence[Shot], sheet: Path, model: 
     raise ValueError(f"invalid captions for {sheet.name}: {error}")
 
 
+def api_client() -> Anthropic:
+    """An API client, or exit before any work if it has no credentials to send."""
+    from anthropic import Anthropic, CredentialsError
+    try:
+        client = Anthropic(max_retries=3, timeout=120)
+    except CredentialsError as e:
+        raise SystemExit(f"{NO_CREDENTIALS} ({e})") from None
+    # Without a key, token or ant profile the SDK only fails at the first request, with a TypeError.
+    if client.api_key is None and client.auth_token is None and client.credentials is None:
+        client.close()
+        raise SystemExit(NO_CREDENTIALS)
+    return client
+
+
 def write_caption_jobs(out: Path, jobs: Sequence[CaptionJob], title: str | None, cast: str | None) -> Path:
     """Write the sheets still needing captions, with everything an agent needs to caption them."""
     path = out / CAPTION_JOBS
@@ -533,13 +550,7 @@ def main() -> None:
         jobs_file = write_caption_jobs(out, pending, title, cast_notes)
         print(f"{len(pending)} sheets need captions: follow {jobs_file}", flush=True)
     elif jobs:
-        from anthropic import Anthropic, CredentialsError
-        try:
-            client = Anthropic(max_retries=3, timeout=120)
-        except CredentialsError as e:
-            raise SystemExit(f"captioning needs Anthropic credentials: export ANTHROPIC_API_KEY or run "
-                             f"`ant auth login` ({e})") from None
-        with client:
+        with api_client() as client:
             def run(job: CaptionJob) -> dict[str, Caption]:
                 result = caption_sheet(client, job.shots, job.sheet, a.caption_model, title, cast_notes)
                 save(job.cache, {"signature": job.signature, "data": result})

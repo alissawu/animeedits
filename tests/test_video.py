@@ -191,6 +191,11 @@ class SyntheticVideoTests(unittest.TestCase):
         class Anthropic:
             def __init__(self, **_: Any) -> None:
                 self.messages = SimpleNamespace(create=create)
+                self.api_key: str | None = "test"
+                self.auth_token = self.credentials = None
+
+            def close(self) -> None:
+                pass
 
             def __enter__(self) -> "Anthropic":
                 return self
@@ -215,9 +220,15 @@ class SyntheticVideoTests(unittest.TestCase):
         def no_credentials(**_: Any) -> None:
             raise CredentialsError("no profile")
 
-        with mock.patch.object(fake, "Anthropic", no_credentials), self.assertRaises(SystemExit) as raised:
-            run()
-        self.assertIn("ant auth login", str(raised.exception))
+        class Keyless(Anthropic):
+            def __init__(self, **_: Any) -> None:
+                super().__init__()
+                self.api_key = None
+
+        for client in (no_credentials, Keyless):
+            with mock.patch.object(fake, "Anthropic", client), self.assertRaises(SystemExit) as raised:
+                run()
+            self.assertIn("--captioner agent", str(raised.exception))
         self.assertEqual(calls, [])
 
         shots = run("--subs-stream", "0")
