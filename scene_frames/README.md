@@ -1,9 +1,7 @@
 # scene_frames
 
-Exact scripts used to split an edit into shots and grab the best frame per shot.
+Detect shots and select keyframes with `detect.py VIDEO OUT_DIR`. Build captions and timestamped dialogue with `index.py VIDEO OUT_DIR`.
 
-detect.py INPUT OUT_DIR: PySceneDetect ContentDetector (threshold 20, min 4 frames) finds cuts. For each shot it skips the first/last ~1/6 of frames (dissolves, flashes) and scores each frame by sharpness (Laplacian variance), contrast (luma std) and closeness to mid exposure. Writes scene_XX.jpg + scenes.json.
+Install `requirements.txt` and ffmpeg. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 
-sheet.py: builds a 3-column contact sheet from scenes.json. Run with any arg to use labels.json ({"1": "label", ...}) and write sheet.jpg; without, writes raw.jpg.
-
-Deps: opencv-python-headless, scenedetect, pillow
+`sheet.py` remains the small manual contact-sheet script. Run inside an output directory, optionally with an argument to use `labels.json`. The indexer builds its own 24-frame sheets without loading a whole movie’s keyframes into memory.

@@ -5,10 +5,10 @@ How `scene_frames/detect.py` turns a video into one thumbnail per shot.
 ## Usage
 
 ```
-python scene_frames/detect.py INPUT OUT_DIR [--faces live|anime]
+python scene_frames/detect.py INPUT OUT_DIR [--faces live|anime] [--sample N] [--proxy WIDTH]
 ```
 
-Writes `scene_XX_SSS.SSs.jpg` (shot number + timestamp of the chosen frame) and `scenes.json` with each shot's start, end and chosen-frame time. Agents can rename frames with a label as long as the timestamp stays at the end, e.g. `04_fireworks_kiss_005.90s.jpg`.
+Writes `scene_XXXX_SSS.SSs.jpg` (shot number + timestamp of the chosen frame) and `scenes.json` with each shot's start, end and chosen-frame time. Agents can rename frames with a label as long as the timestamp stays at the end, e.g. `04_fireworks_kiss_005.90s.jpg`.
 
 ## How it works
 
@@ -25,3 +25,5 @@ Writes `scene_XX_SSS.SSs.jpg` (shot number + timestamp of the chosen frame) and 
 **Face mode rarely changes the pick.** On 4 test edits (1 live action, 3 anime, 94 shots), face mode changed 2 frames, and both picks already had faces. The sharpness/contrast score tends to land on faces anyway, so treat it as a safety net. The anime cascade is also weak: it found 10 of ~15 face shots on one edit.
 
 Requires `opencv-python-headless<5` (5.0 dropped CascadeClassifier).
+
+Defaults: threshold 23, minimum shot length 8 frames. Override with `--threshold` and `--min-len`. With `--sample N`, only N evenly spaced usable frames are scored. A `--proxy WIDTH` speeds up cut detection; frame selection still uses the original video. Finished-shot frames are written immediately rather than kept for the entire video. See [pipeline.md](pipeline.md) for captioning and dialogue indexing.
