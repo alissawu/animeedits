@@ -29,11 +29,14 @@ Good places to look. These are starting points, not a checklist:
   - Creator and staff interviews, for intent.
   - For anime, Japanese-language reviews and explainers often have details English sources lack.
 - **How fans feel:**
-  - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch alike. If it's needed, ask the user to paste threads or use their logged-in browser.
+  - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch alike. Read it with `tools/browser.py`, the user's logged-in research browser: headless, and it never takes focus.
   - MyAnimeList forum threads. These are readable and full of shot-level fan readings.
   - Tumblr meta posts.
   - AO3 relationship and freeform tags. A ship's most-used tags map its dynamics and recurring motifs.
-- **What's been done:** popular edits of the character or ship, and the songs they use. Yours should surprise.
+- **What's been done:** popular edits of the character or ship, and the songs they use. Yours should surprise. To study one:
+  1. Find links with `tools/browser.py`, using TikTok search while logged in.
+  2. Download with `tools/tiktok.py URL media/refs/NAME.mp4`.
+  3. Measure it with `analyze_edit.py`.
 - **The song:**
   - Genius annotations.
   - Artist interviews and album notes.
