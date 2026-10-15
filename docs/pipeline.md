@@ -16,6 +16,8 @@ export ANTHROPIC_API_KEY="your key"
 python scene_frames/index.py VIDEO OUT_DIR --sample 5 --proxy 480 --context context.md
 ```
 
+Captioning uses `ANTHROPIC_API_KEY` if set, otherwise the profile from `ant auth login`.
+
 Builds numbered contact sheets of keyframes and captions them with Claude in parallel. It also transcribes one audio stream locally with faster-whisper, with word timings, and can read an embedded text subtitle stream. The contact sheets are sent to Anthropic; audio and subtitles stay local. Captioning costs API credits; Whisper downloads its model on first use.
 
 ### Captions

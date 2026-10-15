@@ -197,16 +197,27 @@ class SyntheticVideoTests(unittest.TestCase):
             def __exit__(self, *_: object) -> None:
                 pass
 
+        class CredentialsError(Exception):
+            pass
+
         fake = ModuleType("anthropic")
         fake.Anthropic = Anthropic  # type: ignore[attr-defined]
+        fake.CredentialsError = CredentialsError  # type: ignore[attr-defined]
 
         def run(*args: str) -> list[Any]:
             argv = ["index.py", str(self.mkv), str(out), "--no-transcribe", "--sheet-size", "2", *args]
             with mock.patch.object(sys, "argv", argv), mock.patch.dict(sys.modules, {"anthropic": fake}), \
-                    mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 index.main()
             return json.loads((out / "shots.json").read_text())  # type: ignore[no-any-return]
+
+        def no_credentials(**_: Any) -> None:
+            raise CredentialsError("no profile")
+
+        with mock.patch.object(fake, "Anthropic", no_credentials), self.assertRaises(SystemExit) as raised:
+            run()
+        self.assertIn("ant auth login", str(raised.exception))
+        self.assertEqual(calls, [])
 
         shots = run("--subs-stream", "0")
         self.assertEqual(len(calls), math.ceil(len(SHOTS) / 2))

@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -472,10 +471,13 @@ def main() -> None:
         if stale.name not in current:
             stale.unlink()
     if jobs:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise SystemExit("set ANTHROPIC_API_KEY to caption uncached sheets")
-        from anthropic import Anthropic
-        with Anthropic(max_retries=3, timeout=120) as client:
+        from anthropic import Anthropic, CredentialsError
+        try:
+            client = Anthropic(max_retries=3, timeout=120)
+        except CredentialsError as e:
+            raise SystemExit(f"captioning needs Anthropic credentials: export ANTHROPIC_API_KEY or run "
+                             f"`ant auth login` ({e})") from None
+        with client:
             def run(job: tuple[list[Shot], Path, dict[str, object], Path]) -> dict[str, Caption]:
                 group, sheet, sig, path = job
                 result = caption_sheet(client, group, sheet, a.caption_model, title, cast_notes)
