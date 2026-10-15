@@ -29,18 +29,20 @@ Good places to look. These are starting points, not a checklist:
   - Creator and staff interviews, for intent.
   - For anime, Japanese-language reviews and explainers often have details English sources lack.
 - **How fans feel:**
-  - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch alike. Read it with `tools/browser.py`, the user's logged-in research browser: headless, and it never takes focus.
+  - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch; see the browser note below.
   - MyAnimeList forum threads. These are readable and full of shot-level fan readings.
   - Tumblr meta posts.
   - AO3 relationship and freeform tags. A ship's most-used tags map its dynamics and recurring motifs.
 - **What's been done:** popular edits of the character or ship, and the songs they use. Yours should surprise. To study one:
-  1. Find links with `tools/browser.py`, using TikTok search while logged in.
+  1. Find links through TikTok search with `tools/browser.py html`.
   2. Download with `tools/tiktok.py URL media/refs/NAME.mp4`.
   3. Measure it with `analyze_edit.py`.
 - **The song:**
   - Genius annotations.
   - Artist interviews and album notes.
   - Timestamped YouTube comments, which show where a song hits people.
+
+**When a page won't load:** use the built-in web search and fetch first. Only for pages they can't read (Reddit, TikTok search, logged-in or JavaScript-drawn pages), fall back to `python tools/browser.py text URL`. It reads through the user's own logged-in Chrome in background tabs, so their screen never moves. The first read makes Chrome ask the user to Allow the connection, so tell them before it; later reads in the session reuse it. If it exits 3, ask the user to turn on `chrome://inspect/#remote-debugging`, or use `--profile`. Exit 2 means the site blocked the read: note it and move on. Details are in [tools/README.md](tools/README.md).
 
 ## Tools
 

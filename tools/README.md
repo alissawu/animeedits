@@ -11,17 +11,21 @@ For Reddit, old.reddit.com or a post URL ending in .json is the most reliable.
 
 # browser.py
 
-Read JavaScript-heavy or logged-in pages (Tumblr tags, Reddit, TikTok search) through a dedicated headless Chrome over CDP. The profile lives in `~/.animeedits-chrome`, separate from your normal Chrome (Chrome refuses remote debugging on that). It runs as a background-only process: no window, no Dock icon, and it never takes focus.
+A fallback for pages the built-in web search and fetch can't read: Reddit, TikTok search, Tumblr tag pages and anything else behind a login or drawn by JavaScript. It reads them through Chrome over CDP without touching your screen.
+
+**Default: your own Chrome, with its logins.** Turn it on once in Chrome at `chrome://inspect/#remote-debugging` ("Allow remote debugging for this browser instance"). Chrome asks you to Allow every new connection, so the first read starts a small helper that holds one connection open, and later reads reuse it. That's one Allow per session; the helper exits after 30 idle minutes or on `stop`. Each page opens in a background tab and is closed afterwards, so your active tab, windows and cursor never move. Tested: with `serve --check-focus`, every read reported the tabs you were looking at as still showing.
+
+**`--profile`: a separate headless Chrome** with its own profile in `~/.animeedits-chrome` and only the logins you give it. It's a background-only process (no window, no Dock icon) with no Allow prompt. Use it when your Chrome isn't available.
 
 ```
 pip install playwright
-python tools/browser.py login          # once: opens Reddit, Tumblr and TikTok sign-in tabs; sign in, then Cmd+Q
-python tools/browser.py text URL       # starts headless Chrome if needed, prints title, final URL and page text
-python tools/browser.py html URL
-python tools/browser.py stop
+python tools/browser.py text URL [--profile]   # title, final URL and visible text
+python tools/browser.py html URL [--profile]   # rendered HTML, e.g. to pull video links from TikTok search
+python tools/browser.py stop                   # stop the helper (and the headless profile Chrome)
+python tools/browser.py login [URL ...]        # profile only: sign in once in a window, then Cmd+Q
 ```
 
-A login wall, bot challenge or 401/403/429 exits with status 2 and a reason. It's reported, never worked around. Logged out, Reddit answers with a challenge and TikTok search shows no results; Tumblr tag pages work. The CDP port (9333) listens on localhost only, but any local program could drive this logged-in browser while it runs. Stop it when you're done.
+A login wall, bot challenge or 401/403/429 exits with status 2 and a reason. It's reported, never worked around. Exit 3 means no debuggable Chrome, or the Allow was never clicked. While it runs, the helper on localhost:9334 needs a token from `~/.animeedits-browser.json` (mode 600), so web pages can't drive it.
 
 # tiktok.py
 
