@@ -33,7 +33,7 @@ The story even asks him the dare outright. After the pool, Reze tells him the fa
 
 So when the drop hits and the picture gives you the kiss, it's more than a bait-and-switch. For these two the kiss *is* the danger. The creator of the manga has said that love and explosions are alike: both are over in an instant and leave nothing behind.
 
-The edit also runs the story backwards. In the film the kiss turns into violence. Here violence turns into the kiss: she raises a finger to blow something up, and what goes off is the fireworks. That gives them back the one moment before the betrayal.
+The edit also runs the story backwards. In the film the kiss turns into violence. Here violence turns into the kiss: she snaps her fingers to set off her bombs, the sparks rise over the city, and what goes off is the fireworks. That gives them back the one moment before the betrayal.
 
 **What hits the user** is the expectation flipping. You're braced for carnage and get them falling for each other, like stepping on a mine in a minefield and finding out it was a carrot. It also lands because of what the kiss is in the story: the last moment of the ordinary romance. Up to the festival Denji has been living his dream of being a normal boy with a normal girl. Seconds later she bites his tongue and he's back to fighting for his life. For one moment, he was just a boy in love.
 
@@ -43,8 +43,7 @@ Numbers match the shot table at the end.
 
 ### Under the dare (0–4.1)
 
-- **1. Reze with a finger raised, about to detonate.** This is from near the end of the film, not the start. The edit opens in the war, with Reze as the bomb.
-- **2. A night skyline with red and orange sparks rising over it.** From this distance her bombs and festival fireworks look the same. The director picked the most beautiful part of the orange range for the film's explosions, and critics have compared them to fireworks.
+- **1–2. Reze snaps her fingers upward, and her bombs' sparks rise over the night city.** It's one continuous stretch of the film, from near the end, not the start. The edit opens in the war, with Reze as the bomb. Nothing here is fireworks yet. The switch happens at the cut to the kiss, where sparks rising over a night city become fireworks bursting behind them. The director picked the most beautiful part of the orange range for the film's explosions, so the two match.
 
 The taunt asks whether you're scared of danger while the picture shows the danger itself. The last word ends at 3.92, a white flash hits the drop, and the kiss comes in.
 
@@ -54,7 +53,7 @@ The taunt asks whether you're scared of danger while the picture shows the dange
 
 ### Denji's line (6.95–9.55)
 
-The line is lifted out of its scene, probably the beach the morning after the fight, and laid over two kinds of footage:
+The line is lifted out of the beach scene the morning after the fight and laid over two kinds of footage:
 
 - **5. The night-school classroom.** Denji can't read, so Reze sneaks him into the empty school at night and plays teacher. It's their sweetest stretch. Only her last thoughts reveal that she had never been to school either. That's why she didn't kill him the night they met: she was as excited as he was.
 - **6–7. The alley fight and the rooftop fight, both graded cold blue.** This is her trying to kill him. The turn in his line, "but I do", lands on the cut to the rooftop. He says he still likes her while she's blowing him up.
@@ -79,12 +78,12 @@ The line ends, the picture dips to black, and then:
   - Makima is waiting in the alley on the way there, and Reze dies before she arrives.
 
   The flower comes from Makima at the start, and Makima ends it. Her eye isn't in that scene in the film. Putting it behind the handoff says she was watching all along, and at 5 frames it plays like a thought the viewer can't push away. The composite is hand-animated across two frames: the joined hands and the flower shift slightly, so it doesn't read as a still. You'd only notice the motion going frame by frame.
-- **18. A dark-haired boy with an earring glances sideways.** Probably Aki. If it is, he's the one who yelled at Denji not to fall for her when she claimed her feelings were real.
+- **18. Aki, glancing sideways.** He's the one who yelled at Denji not to fall for her when she claimed her feelings were real.
 
 ### Reze's line (16.3–19.35)
 
 - **19. Chainsaw Man vs. Bomb.** The final fight, as her line begins.
-- **20. Two small figures by the sea, on the word that calls him a boy.** The beach the morning after. She told him she never liked him and it was all training; he said he liked her anyway, because she taught him to swim. Both lines in the edit probably come from this scene, so it's where the conversation actually happened.
+- **20. Two small figures by the sea, on the word that calls him a boy.** The beach the morning after. She told him she never liked him and it was all training; he said he liked her anyway, because she taught him to swim. Then she hugged him, broke his neck and left. Both lines in the edit come from this scene: his is what he says there, and hers is her parting words as she leaves him. So the edit's split conversation ends where it actually happened.
 - **21. An extreme close-up of her eye, for the second half of her line.** The line lands on the person saying it.
 
 She says he'll never learn: he'd take the dare again. A fan also knows what she doesn't say. She turned back for the café herself.
@@ -103,8 +102,8 @@ The cutting follows the song. It's slow under the dare, holds through the drop, 
 
 | # | Time (s) | Audio | Shot |
 |---|---|---|---|
-| 1 | 0.00–1.50 | The taunt | Reze points a finger at the sky, about to detonate. Fades up from black |
-| 2 | 1.50–3.95 | The taunt; its last word ends 3.92 | Distant city at night, red and orange sparks over the skyline |
+| 1 | 0.00–1.50 | The taunt | Reze snaps her fingers upward to set off her bombs. Fades up from black |
+| 2 | 1.50–3.95 | The taunt; its last word ends 3.92 | Her bombs' red and orange sparks rising over the night city, continuing shot 1 |
 | 3 | 3.95–4.10 | Drop at 4.0 | White flash |
 | 4 | 4.10–6.95 | The loudest sustained stretch | The fireworks kiss, held |
 | 5 | 6.95–7.90 | Denji's line starts 6.64 | Night-school classroom, two angles |
@@ -120,7 +119,7 @@ The cutting follows the song. It's slow under the dare, holds through the drop, 
 | 15 | 14.10–14.30 | | Pin blast |
 | 16 | 14.30–15.30 | | Reze smiling in the café, fading up from dark, slow push-in |
 | 17 | 15.30–15.55 | | Flash, then the flower handoff with Makima's eye composited behind it |
-| 18 | 15.55–16.30 | | Flash, then a dark-haired boy with an earring glances sideways |
+| 18 | 15.55–16.30 | | Flash, then Aki glances sideways |
 | 19 | 16.30–17.90 | Reze's line starts 16.46 | Chainsaw Man vs. Bomb |
 | 20 | 17.90–18.50 | The word that names him, ending 17.96 | Two small figures by the sea |
 | 21 | 18.50–19.30 | The second half of her line, from 18.44 | Extreme close-up of Reze's eye |
@@ -132,8 +131,5 @@ The cutting follows the song. It's slow under the dare, holds through the drop, 
 - The film's flowers are gerberas, white at the first meeting and red at the end ([Sakuga Blog](https://blog.sakugabooru.com/2026/01/06/chainsaw-man-reze-the-movie-of-the-moment/)). The film expands the pool scene ([CBR](https://www.cbr.com/chainsaw-man-movie-manga-changes-additions/)).
 - The director on explosion colors: [MANTANWEB](https://mantan-web.jp/article/20250919dog00m200003000c.html). The creator on love and explosions: [All About](https://news.allabout.co.jp/articles/o/101798/).
 - Song: [Bandcamp](https://sidewalksandskeletons.bandcamp.com/track/white-light), the title track of the album *WHITE LIGHT*. Structure and timings are from LRCLIB.
-- **Unverified:**
-  - Where in the film each lifted line comes from. Neither wording is confirmed in the manga. The closest are the beach scene, where Denji says he likes her anyway, and her parting words there, telling him to wise up.
-  - Whether the boy at 15.6 s is Aki.
-  - Whether shot 2's sparks are bombs or distant festival fireworks.
-  - The hook's entry at ~12 s is worked out from LRCLIB's line timings (taunt at 0:31, hook at 0:41), not measured from the edit's audio.
+- Confirmed by the user from the film: both lifted lines are from the beach scene, with Reze's as her parting words; the boy at 15.6 s is Aki; shot 2's sparks are Reze's bombs, continuous with shot 1.
+- **Unverified:** the hook's entry at ~12 s is worked out from LRCLIB's line timings (taunt at 0:31, hook at 0:41), not measured from the edit's audio.
