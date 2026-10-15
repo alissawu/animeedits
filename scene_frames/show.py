@@ -31,16 +31,17 @@ import sys
 import textwrap
 import time
 import tomllib
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
+# Only the light modules load up front: index.py brings in scenedetect and OpenCV, which only `try` needs.
 try:
-    from detect import positive_int
-    from index import (CAPTION_MODEL, SHEET_SIZE, IndexedShot, caption_sheet_cli, canonical_characters, cast_names,
-                       detected_shots, name_key, read_context)
+    from cast_notes import canonical_characters, cast_names, name_key, read_context
 except ImportError:  # imported as scene_frames.show
-    from .detect import positive_int  # type: ignore[import-not-found,no-redef]
-    from .index import (CAPTION_MODEL, SHEET_SIZE, IndexedShot,  # type: ignore[import-not-found,no-redef]
-                        caption_sheet_cli, canonical_characters, cast_names, detected_shots, name_key, read_context)
+    from .cast_notes import (canonical_characters, cast_names,  # type: ignore[import-not-found,no-redef]
+                             name_key, read_context)
+
+if TYPE_CHECKING:
+    from index import IndexedShot
 
 MANIFEST = "show.toml"
 HERE = Path(__file__).resolve().parent
@@ -105,6 +106,13 @@ class NameCount(TypedDict):
     unsure: int  # of those, the shots that say "possibly"
     in_cast: bool
     in_synopsis: bool
+
+
+def positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text} is not a positive integer")
+    return value
 
 
 def relative_path(value: object, where: str, key: str, problems: list[str]) -> PurePosixPath | None:
@@ -337,6 +345,11 @@ def video_report(video: Video, out: Path) -> list[str]:
 def try_notes(video: Video, out: Path, sheets: Sequence[int]) -> list[str]:
     """Caption some of a prepared video's sheets with its group's cast notes as they are now, the way finish would
     (one claude -p call per sheet), and return a line per shot. Raises ValueError for something missing."""
+    try:
+        from index import CAPTION_MODEL, SHEET_SIZE, caption_sheet_cli, detected_shots
+    except ImportError:  # imported as scene_frames.show
+        from .index import (CAPTION_MODEL, SHEET_SIZE,  # type: ignore[import-not-found,no-redef]
+                            caption_sheet_cli, detected_shots)
     shots = detected_shots(out)
     count = -(-len(shots) // SHEET_SIZE)
     if bad := [n for n in sheets if not 1 <= n <= count]:

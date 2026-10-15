@@ -11,6 +11,7 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
+import index  # the module show.py loads for try
 import show
 
 # Stand-ins for index.py and story.py: they log their arguments and write what the real ones would. FAKE_FAIL names a
@@ -315,7 +316,7 @@ class CommandTests(ShowTestCase):
         out = self.out / "S01E01"
         (out / "cache").mkdir(parents=True)
         (out / "sheets").mkdir()
-        rows = [{"i": i, "start": float(i), "end": i + 1.0} for i in range(1, show.SHEET_SIZE + 3)]
+        rows = [{"i": i, "start": float(i), "end": i + 1.0} for i in range(1, index.SHEET_SIZE + 3)]
         (out / "cache" / "detection.json").write_text(json.dumps({"signature": {}, "data": rows}))
         (out / "sheets" / "sheet_0002.jpg").write_bytes(b"image")
         asked: list[tuple[list[int], str, str]] = []
@@ -326,11 +327,11 @@ class CommandTests(ShowTestCase):
             return {str(s["i"]): {"caption": f"Shot {s['i']}.", "characters": [{"name": "Mira", "certain": False}]}
                     for s in group}
 
-        with mock.patch.object(show, "caption_sheet_cli", caption), mock.patch.object(show.shutil, "which",
-                                                                                      return_value="claude"):
+        with mock.patch.object(index, "caption_sheet_cli", caption), mock.patch.object(show.shutil, "which",
+                                                                                       return_value="claude"):
             code, printed = self.run_show("try", "--only", "S01E01", "--sheets", "2")
             self.assertEqual(code, 0, printed)
-            self.assertEqual(asked, [([13, 14], "sheet_0002.jpg", show.CAPTION_MODEL)])
+            self.assertEqual(asked, [([13, 14], "sheet_0002.jpg", index.CAPTION_MODEL)])
             self.assertIn("  0013 13.0-14.0s [possibly Mira Sato] Shot 13.", printed)
             code, printed = self.run_show("try", "--only", "S01E01", "--sheets", "3")
             self.assertIn("has sheets 1-2, not 3", printed)

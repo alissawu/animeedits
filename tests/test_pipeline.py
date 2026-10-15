@@ -10,6 +10,7 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
+import cast_notes
 from detect import flash_runs, motion_peaks, positive_int, usable_range
 spec = importlib.util.spec_from_file_location("shot_index", Path(__file__).resolve().parents[1] / "scene_frames/index.py")
 assert spec and spec.loader
@@ -137,13 +138,13 @@ class CaptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "context.md"
             path.write_text(CONTEXT, encoding="utf-8")
-            title, cast = index.read_context(path)
+            title, cast = cast_notes.read_context(path)
             self.assertEqual(title, "Example Show, Season 2")
             self.assertEqual(cast, "### Mira\n- short dark purple hair, green eyes, black choker\n"
                                    "### Tomo\n- black topknot, earrings, black suit")
             path.write_text("## Cast\n\n## Scenes\n- pool\n", encoding="utf-8")
             with self.assertRaises(ValueError):
-                index.read_context(path)
+                cast_notes.read_context(path)
 
     def test_retries_until_every_shot_is_captioned(self) -> None:
         client, calls = fake_client(caption_reply(1), "not json", caption_reply(1, 2))
@@ -184,12 +185,12 @@ class CastNameTests(unittest.TestCase):
             "### Maki Zen'in\n### Tamamo-no-Mae (Geto's curse)\n### Satoru Gojo\n")
 
     def test_cast_names(self) -> None:
-        self.assertEqual(index.cast_names(self.CAST), ["Satoru Gojo", "Suguru Geto", "Kenjaku", "Toji Fushiguro",
+        self.assertEqual(cast_notes.cast_names(self.CAST), ["Satoru Gojo", "Suguru Geto", "Kenjaku", "Toji Fushiguro",
                                                        "Megumi Fushiguro", "Maki Zen'in", "Tamamo-no-Mae"])
-        self.assertEqual(index.cast_names("- Box: a white square"), [])
+        self.assertEqual(cast_notes.cast_names("- Box: a white square"), [])
 
     def test_canonical_name(self) -> None:
-        names = index.cast_names(self.CAST)
+        names = cast_notes.cast_names(self.CAST)
         for given, expected in {
             "Satoru Gojo": "Satoru Gojo", "satoru  GOJO": "Satoru Gojo", "Gojo": "Satoru Gojo",
             "Gojo Satoru": "Satoru Gojo", "Satoru": "Satoru Gojo", "Geto": "Suguru Geto", "Kenjaku": "Kenjaku",
@@ -198,12 +199,12 @@ class CastNameTests(unittest.TestCase):
             "Fushiguro": "Fushiguro", "Yuji Itadori": "Yuji Itadori", "Young Gojo": "Young Gojo", "": "",
         }.items():
             with self.subTest(given):
-                self.assertEqual(index.canonical_name(given, names), expected)
-        self.assertEqual(index.canonical_name("Gojo", []), "Gojo")
+                self.assertEqual(cast_notes.canonical_name(given, names), expected)
+        self.assertEqual(cast_notes.canonical_name("Gojo", []), "Gojo")
 
     def test_canonical_characters_merge(self) -> None:
-        names = index.cast_names(self.CAST)
-        self.assertEqual(index.canonical_characters(
+        names = cast_notes.cast_names(self.CAST)
+        self.assertEqual(cast_notes.canonical_characters(
             [{"name": "Gojo", "certain": False}, {"name": "Satoru Gojo", "certain": True},
              {"name": "Geto", "certain": False}, {"name": "Suguru Geto", "certain": False}], names),
             [{"name": "Satoru Gojo", "certain": True}, {"name": "Suguru Geto", "certain": False}])

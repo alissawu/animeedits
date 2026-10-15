@@ -16,14 +16,15 @@ import shutil
 from typing import Literal, NotRequired, TypedDict, cast
 
 try:
+    from cast_notes import Character, canonical_name, cast_names, merge_characters, name_key, read_context
     from detect import positive_int
-    from index import (POSSIBLY, Character, IndexedShot, Line, cached, canonical_name, cast_names, claude_cli,
-                       merge_characters, name_key, read_context, save, sha256, with_retries)
+    from index import POSSIBLY, IndexedShot, Line, cached, claude_cli, save, sha256, with_retries
 except ImportError:  # imported as scene_frames.story
+    from .cast_notes import (Character, canonical_name,  # type: ignore[import-not-found,no-redef]
+                             cast_names, merge_characters, name_key, read_context)
     from .detect import positive_int  # type: ignore[import-not-found,no-redef]
-    from .index import (POSSIBLY, Character, IndexedShot, Line,  # type: ignore[import-not-found,no-redef]
-                        cached, canonical_name, cast_names, claude_cli, merge_characters, name_key, read_context,
-                        save, sha256, with_retries)
+    from .index import (POSSIBLY, IndexedShot, Line, cached,  # type: ignore[import-not-found,no-redef]
+                        claude_cli, save, sha256, with_retries)
 
 STORY_VERSION = 1
 STORY_MODEL = "claude-opus-5-5"
