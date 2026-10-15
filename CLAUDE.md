@@ -45,6 +45,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 | Need | Command | Docs |
 |---|---|---|
 | Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO out/index/NAME ...`, full command below | [pipeline.md](docs/pipeline.md) |
+| Place each shot in the story: scenes, what happens, who's there, caption names the scene contradicts | `python scene_frames/story.py out/index/NAME --context out/index/SHOW.md` | [pipeline.md](docs/pipeline.md#story) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
 | Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
 
@@ -56,7 +57,8 @@ Things you can't see from the code:
   `python scene_frames/index.py VIDEO out/index/NAME --sample 5 --proxy 480 --faces anime --lang LANG --context out/index/SHOW.md`
   LANG is the audio's language (`en`, `ja`). Add `--subs FILE` when index.py lists a subtitle file beside the video. Every stage is cached, so the command finishes a partial index, and on a finished one it only rebuilds the contact sheets, a minute or two. Other options redo detection for the whole video.
 - **Cast notes are shared too.** `out/index/SHOW.md` (e.g. `chainsaw_man.md`) holds one show's cast notes for every video of it. If captions keep misnaming someone, fix the notes, but every video of that show gets re-captioned.
-- **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in.
+- **Captions say what a still shows; `story.json` says where it falls in the plot.** After indexing, write the episode's or film's plot in order to `out/index/NAME/synopsis.md` (a Fandom wiki episode summary works well), then run `story.py`. It's cached and shared like the index. Before trusting a caption's character name, check `story.json` for a flag on that shot.
+- **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in, and so does `story.py`.
 
 ## Files
 

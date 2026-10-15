@@ -29,7 +29,7 @@ Builds numbered contact sheets of keyframes and captions them with Claude in par
 
 ### Captions
 
-Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. Nobody is named, even as "possibly", when what's visible contradicts how that character looks, such as a different hair color. `characters` lists everyone a caption names by bare name, with `certain: false` for the "possibly"s, and leaves out the unidentified. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is left to a later text-only pass over shot order and dialogue.
+Captions name the characters the model recognizes, write "possibly" before a name it's unsure of, and call people it can't place "unidentified" instead of guessing. Recognition fails most on small, dark, back-view and silhouetted figures. Nobody is named, even as "possibly", when what's visible contradicts how that character looks, such as a different hair color. `characters` lists everyone a caption names by bare name, with `certain: false` for the "possibly"s, and leaves out the unidentified. Captions describe only what's pictured, and text inside the frames is never treated as an instruction. Placing a shot in the story is a separate text-only pass over shot order and dialogue, [Story](#story).
 
 Nothing in the prompt is specific to a show. Two inputs tell the model what it's looking at:
 
@@ -108,6 +108,43 @@ A line spanning a cut appears in both shots; its word times show which words fal
 ### Caching
 
 Detection, each sheet's captions, the transcript and the subtitles are cached in `cache/`. Rerun the same command to resume after a failure. Completed sheets are saved individually; transient API errors and invalid caption JSON are retried. Cache signatures include source path/size/mtime and the options that affect each stage. That covers the detection options, caption model, sheet contents, title, cast and prompt version, plus the Whisper model, language, VAD and audio stream, and the subtitle stream. A subtitle file is read again on every run. Changed settings rerun only the affected stage. Use a separate OUT_DIR for each video. Whisper resumes at the transcription stage, not within a partly transcribed audio track.
+
+## Story
+```sh
+python scene_frames/story.py OUT_DIR --context context.md
+```
+
+Places every indexed shot in the story. It reads `OUT_DIR/shots.json` and a synopsis of the video, `OUT_DIR/synopsis.md` unless `--synopsis FILE` names another. Claude reads them as text, with no images, and splits the shots into scenes. Each scene gets a label for what happens, who is in it and a confidence. Caption names that the scene contradicts are flagged. The result goes to `OUT_DIR/story.json`. `shots.json` is never changed: captions stay a record of what each still shows, and the story sits beside them.
+
+Captions leave the story out on purpose. Given a synopsis while looking at a thumbnail, a captioner labels scenes from the thumbnail, confidently and often wrongly. This pass sees what a captioner can't: every shot in order, the lines over them and the synopsis. It trusts the lines most (who speaks, who is addressed by name), then the synopsis, then the captions.
+
+Inputs:
+
+- The synopsis: the episode's or film's plot in order, as plain text or markdown, from the research step. A Fandom wiki's episode summary works well. When the page won't load, the wiki's MediaWiki API usually still answers through curl: `https://WIKI.fandom.com/api.php?action=parse&page=PAGE&prop=wikitext&format=json`. Naming the opening and ending songs helps. Keep it beside the index, since every edit of that video shares it.
+- `--context FILE`: the cast notes given to `index.py --context`. Scenes name characters as the notes do, which matches the captions. The visual identifiers in the notes help the model say who a misnamed person really is. The notes' `# ` heading is the default `--title`.
+- Lines: each shot's subtitles when the index has them, otherwise its Whisper dialogue. A line spanning cuts is given once, under the shot it begins in.
+
+`story.json` is an array of scenes in order, covering every shot exactly once:
+
+| Field | Meaning |
+|---|---|
+| `id` | Scene number, from 1 |
+| `first_shot`, `last_shot` | Shot IDs, inclusive |
+| `start`, `end` | Seconds, from the first shot's start to the last shot's end |
+| `label` | One sentence on what happens, e.g. "Gojo and Geto escort Riko to Okinawa". Opening and ending credits, title cards and previews are labeled as what they are |
+| `characters` | Everyone who appears or speaks, by the cast notes' names |
+| `confidence` | `high`: lines or an unmistakable event from the synopsis confirm it. `medium`: it fits the synopsis and captions, but nothing confirms it. `low`: a guess |
+| `flags` | `[{shot, name, likely, reason}]`: a name the shot's caption gives that the scene contradicts, who the person likely is (`null` when unclear), and the line or synopsis point that says so. `name` is spelled as in that shot's `characters` |
+
+Use it to find a moment by what happens rather than by how a still looks, and to leave out credits, recaps and previews. Before trusting a caption's name, check its shot for a flag. A name is flagged only when something contradicts it, not just because the caption was unsure.
+
+A scene is a continuous stretch of story in one place and time. One that runs past about 40 shots is split where the action turns, except for credits. Boundaries at changes of place or time and at credits are stable from run to run. Where a long scene splits into beats can move by a shot or a few.
+
+Each request holds up to `--chunk-size` shots (default 300, about 30k tokens with captions and subtitles). A chunk's last scene may run on past its last shot, so that scene is dropped. The next chunk starts at the dropped scene's first shot, with the labels of every scene so far. So chunking never places a scene boundary unless a single scene fills a whole chunk. A 24-minute episode of about 480 shots takes two requests, about 45 s in all with Opus 5.5. A 2,000-shot film takes about eight, one after another.
+
+`--model` defaults to `claude-opus-5-5`. Calls go through `claude -p` on the Claude Code sign-in, set up exactly as for `--captioner claude`: no tools, settings, MCP servers or CLAUDE.md, and the model is pinned. A reply must cover every shot once with scenes in order, and may flag only names that the scene's captions give. A reply that fails this is retried up to three times.
+
+Each chunk's scenes are cached in `cache/story_NNNN.json`. The cache key is the model plus a hash of the whole request: instructions, synopsis, cast, title, the chunk's shots with their captions and lines, and the scenes before it. Rerunning is free. A changed synopsis or cast reruns every chunk, and changed captions rerun from the first chunk they touch. A failed run resumes after the last finished chunk.
 
 ## Render
 ```sh
