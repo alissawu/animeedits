@@ -26,7 +26,7 @@ Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 1, 2, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 2, 2, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -38,6 +38,10 @@ SPIKE_MARGIN = 40.0           # a too-short piece this much brighter than both n
 CUT_THRESHOLD = 0.45          # adjacent frames cut when structure and edge distance both exceed this
 SAME_SHOT = 0.35              # across a flash or black, both distances below this mean the same shot
 PIXEL_GATE = 3.0              # mean RGB change below which nothing is a cut
+SPIKE_RATIO = 3.0             # a cut the distances miss changes this many times more than any frame near it
+SPIKE_REACH = 0.3             # seconds either side that count as near
+SPIKE_HIST = 0.15             # and shifts the colour histogram at least this much
+SPIKE_EDGE = 0.55             # and changes its edges this much, more than CUT_THRESHOLD asks
 DISSOLVE_HALF_WIDTHS = (0.1, 0.2, 0.3, 0.4)  # seconds either side of a dissolve's centre
 DISSOLVE_FIT = 0.35           # blend residual as a share of the distance to the nearer end
 SAMPLE_RATE = 22050
@@ -511,13 +515,42 @@ def _span_items(labels: Sequence[Label], start: int, end: int) -> list[_Item]:
     return items
 
 
-def _build_items(f: _Features, labels: Sequence[Label], min_shot: int, cut_threshold: float) -> list[_Item]:
+def _spike_cuts(f: _Features, runs: Sequence[tuple[int, int]], reach: int) -> list[int]:
+    """Cuts between shots alike in layout and palette, which the distance test misses.
+
+    Each run is a stretch of adjacent footage frames with no cut found yet. Inside it, a frame
+    is a cut when its pixel change stands out from every other change within `reach` frames
+    in the same run, its edges change, and its colours shift. Held drawings, animation on 2s
+    and 3s, fast action and shake change on many nearby frames, so none of them stands out.
+    A drawing moved or zoomed by the editor stands out but keeps its colours; a grade stepped
+    over a held picture keeps most of its edges, so the edge bar is higher than the distance
+    test's. A frame needs `reach` other frames of the run near it, or there is nothing to stand
+    out from.
+    """
+    cuts: list[int] = []
+    for start, end in runs:
+        for i in range(start + 1, end):
+            near = [float(f.pixel_diff[j]) for j in range(max(start + 1, i - reach), min(end, i + reach + 1))
+                    if j != i]
+            if (len(near) < reach or f.pixel_diff[i] < SPIKE_RATIO * max(near + [PIXEL_GATE])
+                    or f.hist_dist[i] < SPIKE_HIST):
+                continue
+            _, edge = _window_distance(f, range(max(start, i - 2), i), range(i, min(end, i + 2)))
+            if edge >= SPIKE_EDGE:
+                cuts.append(i)
+    return cuts
+
+
+def _build_items(f: _Features, labels: Sequence[Label], fps: float, min_shot: int,
+                 cut_threshold: float) -> list[_Item]:
     spans = _transition_spans(labels, min_shot)
     in_span = np.zeros(len(labels), bool)
     for s, e in spans:
         in_span[s:e] = True
     content = np.flatnonzero(~in_span).tolist()
     new_shot: dict[int, bool] = {}
+    runs: list[tuple[int, int]] = []
+    run_start = content[0] if content else 0
     for k in range(1, len(content)):
         prev, cur = content[k - 1], content[k]
         structure, edge = _window_distance(f, content[max(0, k - 2):k], content[k:k + 2])
@@ -528,6 +561,13 @@ def _build_items(f: _Features, labels: Sequence[Label], min_shot: int, cut_thres
             # Editors put flashes and black frames on cuts, so across one we split
             # unless both sides plainly match.
             new_shot[cur] = max(structure, edge) >= SAME_SHOT
+        if cur in new_shot or cur != prev + 1:
+            runs.append((run_start, prev + 1))
+            run_start = cur
+    if content:
+        runs.append((run_start, content[-1] + 1))
+    for cut in _spike_cuts(f, runs, max(2, round(SPIKE_REACH * fps))):
+        new_shot[cut] = True
     items = [item for s, e in spans for item in _span_items(labels, s, e)]
     span_starts = [s for s, _ in spans]
     starts = sorted({content[0]} | set(new_shot)) if content else []
@@ -668,7 +708,7 @@ def analyze_picture(frames: NDArray[np.uint8], fps: float, *, cut_threshold: flo
         raise ValueError("no frames to analyse")
     f = _features(frames)
     labels = _labels(f, fps)
-    items = _build_items(f, labels, min_shot, cut_threshold)
+    items = _build_items(f, labels, fps, min_shot, cut_threshold)
     _resolve_short_shots(items, f, min_shot)
 
     first: dict[int, int] = {}
