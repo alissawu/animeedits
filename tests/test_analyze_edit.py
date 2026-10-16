@@ -101,6 +101,50 @@ class SyntheticPictureTests(unittest.TestCase):
                          [("shot", 0, 6), ("flash", 6, 7), ("shot", 7, 13)])
 
 
+def similar_shot(seed: int, gain: float, width: int, height: int) -> np.ndarray:
+    """A pale blue picture lit from the top, with its own fine detail. Shots made from it
+    share their layout and palette, like two angles on one character in the same light."""
+    layout = (np.array([200, 215, 240], np.float32) * np.linspace(1.0, 0.3, height)[:, None, None]
+              * np.linspace(0.8, 1.0, width)[None, :, None])
+    coarse = np.random.default_rng(seed).integers(0, 256, (18, 32, 3), dtype=np.uint8)
+    detail = np.asarray(Image.fromarray(coarse).resize((width, height), Image.Resampling.BILINEAR), np.float32)
+    return np.clip(gain * (0.75 * layout + 0.25 * detail), 0, 255)
+
+
+def on_threes(picture: np.ndarray, count: int) -> list[np.ndarray]:
+    """A held background with a dark figure that moves on every third frame."""
+    frames = []
+    for k in range(count):
+        frame = picture.copy()
+        x = 30 + 8 * (k // 3)
+        frame[40:110, x:x + 40] *= 0.45
+        frames.append(frame.astype(np.uint8))
+    return frames
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not found")
+class SimilarShotCutTests(unittest.TestCase):
+    def test_cut_between_similar_shots(self) -> None:
+        width, height, fps = 256, 144, 24
+        first = on_threes(similar_shot(1, 0.8, width, height), 24)
+        second = on_threes(similar_shot(2, 1.0, width, height), 24)
+        # Halfway through the second shot the editor nudges the picture: a jump in every
+        # pixel that keeps the shot's colours, which must not read as a cut.
+        second[12:] = [np.roll(frame, (6, 8), (0, 1)) for frame in second[12:]]
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "similar.mp4"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+                            "-r", str(fps), "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                            str(video)], input=np.stack(first + second).tobytes(), check=True)
+            info = ae.probe(video)
+            assert info.video is not None
+            picture = ae.analyze_picture(ae.decode_frames(info), info.video.fps)
+        # The two shots' layouts correlate too well for the distance test alone.
+        self.assertLess(picture.frames[24].structure_dist, ae.CUT_THRESHOLD)
+        self.assertEqual([(s.kind, s.start, s.end, s.enter) for s in picture.segments],
+                         [("shot", 0, 24, "start"), ("shot", 24, 48, "cut")])
+
+
 class TimelineTests(unittest.TestCase):
     def test_nearest(self):
         self.assertEqual(ae.nearest(1.04, [0.5, 1.0, 1.5]), ae.Nearest(1.0, 0.04))
