@@ -506,13 +506,16 @@ class VoiceStemTests(unittest.TestCase):
 
 def make_song_sources(root: Path) -> None:
     """steps.wav: 440 Hz for 2 s, then 660, then 880. chord.wav: 200 Hz + 5 kHz. tone.wav: 1 kHz. beep.wav: a
-    0.3 s 3 kHz sound effect. All at 48 kHz, with a red picture to cut to."""
+    0.3 s 3 kHz sound effect. lows.wav: 40 Hz + 1 kHz. levels.wav: 1 kHz at amplitude 0.02 for 1 s, then 0.2.
+    All at 48 kHz, with a red picture to cut to."""
     ffmpeg("-f", "lavfi", "-i", "color=c=red:s=64x36:r=24:d=8", "-c:v", "libx264", "-preset", "ultrafast",
            "-pix_fmt", "yuv420p", str(root / "red.mp4"))
     for name, expr, seconds in (("steps", "0.1*sin(2*PI*if(lt(t,2),440,if(lt(t,4),660,880))*t)", 6),
                                 ("chord", "0.05*sin(2*PI*200*t)+0.05*sin(2*PI*5000*t)", 7),
                                 ("tone", "0.1*sin(2*PI*1000*t)", 3),
-                                ("beep", "0.1*sin(2*PI*3000*t)", 0.3)):
+                                ("beep", "0.1*sin(2*PI*3000*t)", 0.3),
+                                ("lows", "0.1*sin(2*PI*40*t)+0.1*sin(2*PI*1000*t)", 2),
+                                ("levels", "if(lt(t,1),0.02,0.2)*sin(2*PI*1000*t)", 2)):
         ffmpeg("-f", "lavfi", "-i", f"aevalsrc='{expr}':d={seconds}:s=48000", str(root / f"{name}.wav"))
 
 
@@ -595,6 +598,37 @@ class SongShapingTests(unittest.TestCase):
         table = (self.root / "shaped" / "edl_table.md").read_text()
         self.assertIn("| 2 | 1.000 | hold |  | 500 Hz |  |", table)
         self.assertIn("| 5.250–5.550 | beep.wav (track 0) | 0.000–0.300 | +0 dB | 0 dB, muffled to 500 Hz | an impact |", table)
+
+    def test_bass_key_lifts_only_the_lows(self) -> None:
+        audio = self.mix(song_edl({"source": "lows.wav", "src_in": 0.0, "src_out": 2.0, "keyframes": [
+            {"t": 0.0, "bass_db": 0}, {"t": 1.0, "bass_db": 6, "ease": "hold"}]}, 2.0), "bass")
+        self.assertAlmostEqual(tone(audio, 40, 0.2, 0.9), 0.1, delta=0.002)  # 0 dB changes nothing
+        self.assertAlmostEqual(tone(audio, 1000, 0.2, 0.9), 0.1, delta=0.002)
+        # A third of the shelf's corner down, the lift is close to its full 6 dB; ten times above it, nothing.
+        self.assertAlmostEqual(20 * math.log10(tone(audio, 40, 1.2, 1.9) / 0.1), 6, delta=0.3)
+        self.assertAlmostEqual(tone(audio, 1000, 1.2, 1.9), 0.1, delta=0.002)
+
+    def test_compressor_squeezes_the_loud_part_and_keys_set_how_much(self) -> None:
+        song = {"source": "levels.wav", "src_in": 0.0, "src_out": 2.0,
+                "compress": {"threshold_db": -30, "ratio": 4, "makeup_db": 6}}
+
+        def gains(audio: np.ndarray, start: float = 1.2) -> tuple[float, float]:
+            return (20 * math.log10(tone(audio, 1000, 0.2, 0.9) / 0.02),
+                    20 * math.log10(tone(audio, 1000, start, 1.9) / 0.2))
+
+        quiet, loud = gains(self.mix(song_edl(song, 2.0), "compressed"))
+        # The quiet part (RMS -37 dBFS) is under the threshold and only gets the makeup; the loud part's RMS of
+        # -17 dBFS is 13 dB over it, and comes out 13 / ratio over: 9.75 dB down before the makeup.
+        self.assertAlmostEqual(quiet, 6, delta=0.1)
+        self.assertAlmostEqual(loud, 6 - 13 * (1 - 1 / 4), delta=1)
+        keyed = {**song, "keyframes": [{"t": 0.0, "compress": 0}, {"t": 1.5, "compress": 1, "ease": "hold"}]}
+        audio = self.mix(song_edl(keyed, 2.0), "compress-keyed")
+        self.assertAlmostEqual(gains(audio)[0], 0, delta=0.05)  # the dry song until 1.5 s
+        self.assertAlmostEqual(20 * math.log10(tone(audio, 1000, 1.1, 1.45) / 0.2), 0, delta=0.05)
+        self.assertAlmostEqual(gains(audio, 1.6)[1], loud, delta=0.3)
+        table = (self.root / "compress-keyed" / "edl_table.md").read_text()
+        self.assertIn("at 1×, compressed 4:1 over -30 dB (attack 10 ms, release 150 ms, makeup +6 dB).", table)
+        self.assertIn("| 2 | 1.500 | hold |  |  |  | 100% |", table)
 
     def test_filter_slope_sets_how_steeply_the_low_pass_cuts(self) -> None:
         song = {"source": "chord.wav", "src_in": 0.0, "src_out": 1.0, "keyframes": [{"t": 0.0, "lowpass": 500}]}
@@ -718,6 +752,33 @@ class SongCurveTests(unittest.TestCase):
                                    0.5, delta=0.01)
 
 
+    def test_bass_and_compressor_come_before_the_gain_and_filters(self) -> None:
+        edl = parse_edl(song_edl({"source": "chord.wav", "src_in": 0.0, "src_out": 4.0,
+                                  "compress": {"threshold_db": -20, "ratio": 3, "attack": 0.005, "release": 0.2,
+                                               "makeup_db": 4},
+                                  "keyframes": [{"t": 0.0, "bass_db": 0, "compress": 0, "gain_db": 0, "lowpass": 20000},
+                                                {"t": 1.0, "bass_db": 4.5, "compress": 1, "ease": "hold"},
+                                                {"t": 2.0, "gain_db": -3, "ease": "hold"}]}, 4.0))
+        filters = render.song_control_filters(edl, Path("/x/commands.txt"))
+        self.assertEqual(filters[2:5], [
+            "lowshelf@song_bass=f=120:width_type=q:width=0.7071:gain=0.0000",
+            "acompressor@song_compress=threshold=0.100000:ratio=3:attack=5:release=200:makeup=1.584893:mix=0.000000",
+            "volume@song_gain=volume=1.000000:eval=once"])
+        text = render.song_command_text(edl)
+        assert text is not None
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("lowshelf@song_bass gain 4.5000, acompressor@song_compress mix 1.000000;", lines[0])
+        self.assertTrue(lines[1].endswith("volume@song_gain volume 0.707946;"), lines[1])
+        # Without bass or compress keys a compressor still runs, fully on, and sends no commands.
+        steady = parse_edl(song_edl({"source": "chord.wav", "src_in": 0.0, "src_out": 4.0,
+                                     "compress": {}}, 4.0))
+        self.assertIsNone(render.song_command_text(steady))
+        self.assertEqual(render.song_control_filters(steady, None), [
+            f"asetnsamples=n={render.BLOCK}:p=0",
+            "acompressor@song_compress=threshold=0.100000:ratio=4:attack=10:release=150:makeup=1.000000:mix=1.000000"])
+
+
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
         with self.assertRaises(EdlError) as ctx:
@@ -760,13 +821,30 @@ class EdlValidationTests(unittest.TestCase):
         edl["song"]["filter_slope"] = 18
         problems = self.problems(edl)
         self.assertIn("song.filter_slope: must be one of 12, 24, 36, 48, got 18", problems)
-        self.assertIn("song.keyframes[0]: sets none of gain_db, lowpass, highpass", problems)
+        self.assertIn("song.keyframes[0]: sets none of gain_db, lowpass, highpass, bass_db, compress", problems)
         self.assertIn("song.keyframes[1].t: must be after the previous keyframe, got 0.4", problems)
         self.assertIn("song.keyframes[1].lowpass: must be from 20 to 20000, got 10", problems)
         self.assertIn("song.keyframes: the last keyframe (6.000 s) is past the 5.000 s output", problems)
         self.assertIn("song.tail.decay: is for type reverb; an echo fades by feedback", problems)
         self.assertIn("song.tail.input: must be above 0 and at most the song's 4.000 s, got 9", problems)
         self.assertIn("audio[0].muffle_hz: must be from 20 to 20000, got 30000", problems)
+        edl = copy.deepcopy(EDL)
+        edl["song"]["keyframes"] = [{"t": 0.0, "bass_db": 30, "compress": 0.5}, {"t": 1.0, "compress": 2}]
+        problems = self.problems(edl)
+        self.assertIn("song.keyframes[0].bass_db: must be from -24 to 24, got 30", problems)
+        self.assertIn("song.keyframes[0].compress: needs song.compress to set the compressor", problems)
+        self.assertIn("song.keyframes[1].compress: must be from 0 to 1, got 2", problems)
+        edl["song"]["keyframes"] = [{"t": 0.0, "compress": 0.5}]
+        edl["song"]["compress"] = {"threshold_db": 3, "ratio": 0.5, "attack": 0, "release": 10, "makeup_db": -2}
+        self.assertEqual(self.problems(edl), [
+            "song.compress.threshold_db: must be from -60 to 0, got 3",
+            "song.compress.ratio: must be from 1 to 20, got 0.5",
+            "song.compress.attack: must be from 0.0001 to 2, got 0",
+            "song.compress.release: must be from 0.001 to 9, got 10",
+            "song.compress.makeup_db: must be from 0 to 36, got -2"])
+        edl["song"]["compress"] = {"knee": 2}
+        self.assertEqual(self.problems(edl), ["song.compress.knee: unknown field (allowed: threshold_db, ratio, "
+                                              "attack, release, makeup_db)"])
 
     def test_tail_lengthens_the_output(self) -> None:
         edl = copy.deepcopy(EDL)

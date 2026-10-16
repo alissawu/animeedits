@@ -8,7 +8,7 @@ are errors, so typos never pass silently.
   output    {width, height, fps}: even pixel sizes and a whole-number frame rate.
             9:16 output from 16:9 sources crops each clip (see clip.crop).
   song      {source, src_in, src_out, pieces, speed=1, gain_db=0, fade_in=0, fade_out=0,
-              keyframes, filter_slope=24, tail}
+              keyframes, filter_slope=24, compress, tail}
             The song: one continuous window (src_in, src_out), or pieces of it joined in
             order. Output length = the song's length / speed, plus tail.seconds; the picture
             is cut to fit the audio, never the reverse. speed resamples like a turntable, so
@@ -20,15 +20,27 @@ are errors, so typos never pass silently.
             the join into a piece blends, so it is not given on the first piece. It is centred
             on the join: each side plays crossfade / 2 past its edge, so the source needs that
             much either side. The default, JOIN (5 ms), only keeps the join from clicking.
-            keyframes [{t, ease="linear", gain_db, lowpass, highpass}]: t is output seconds,
-            tail included, strictly increasing; eases and holds work as for clip keyframes.
+            keyframes [{t, ease="linear", gain_db, lowpass, highpass, bass_db, compress}]: t is
+            output seconds, tail included, strictly increasing; eases and holds work as for
+            clip keyframes.
             gain_db adds to the song's gain, interpolated in dB (a dip before a drop, a spike
             on it). lowpass and highpass are cutoffs in Hz, 20 to 20000, of Butterworth
             filters, interpolated in octaves: lowpass 400 muffles the song, 20000 is fully
-            open; highpass 20 is open, 300 thins it. Before its first key a property has that
-            key's value; with no keys the gain is 0 dB and both filters are open.
+            open; highpass 20 is open, 300 thins it. bass_db (-24 to 24) is the gain of a low
+            shelf at BASS_HZ (120 Hz), interpolated in dB: it lifts or cuts everything below
+            the corner, by half that at the corner and almost nothing two octaves above it.
+            compress (0 to 1) is how much of the song goes through song.compress, mixed with
+            the rest uncompressed. Before its first key a property has that key's value; with
+            no keys the gain and bass are 0 dB, both filters are open, and a compressor, if
+            given, is fully on.
             filter_slope (12, 24, 36 or 48 dB/octave) sets how steeply both filters, and the
             layers' muffles, cut past their cutoff: 12 dulls gently, 48 is a wall.
+            compress {threshold_db=-20, ratio=4, attack=0.01, release=0.15, makeup_db=0}: a
+            compressor on the song. Where the song's RMS level is above threshold_db (-60 to
+            0 dBFS) it comes out `ratio` (1 to 20) times nearer to it, reacting within attack
+            seconds (0.0001 to 2) and letting go over release seconds (0.001 to 9);
+            makeup_db (0 to 36) then lifts the compressed song. It runs after the bass shelf,
+            so a bass lift into it is held down on the kicks and stays up between them.
             tail {seconds, type="echo", input=0.5, wet_db=0, delay=0.25, feedback=0.5, decay=2}:
             the song rings out for `seconds` after it ends instead of stopping. The song's
             last `input` seconds feed the effect and the song itself stops at its end (with a
@@ -125,13 +137,14 @@ AudioStem = Literal["mix", "voice"]
 TailType = Literal["echo", "reverb"]
 
 ANIMATED = ("speed", "zoom", "x", "y", "shake")
-SONG_ANIMATED = ("gain_db", "lowpass", "highpass")
+SONG_ANIMATED = ("gain_db", "lowpass", "highpass", "bass_db", "compress")
 DUCK_RAMP = 0.08
 JOIN = 0.005  # seconds of crossfade at a splice, and of fade where the song stops before a tail
 OPEN_LOWPASS, OPEN_HIGHPASS = 20000.0, 20.0  # cutoffs at which the song's filters are off
 ECHO_DELAY, ECHO_FEEDBACK, REVERB_DECAY = 0.25, 0.5, 2.0
 TAIL_FADE = 0.25  # the fraction of a tail, at its end, that fades to silence
 FILTER_SLOPES = (12, 24, 36, 48)  # dB per octave of the song's low- and high-pass filters
+BASS_HZ = 120.0  # corner of the song's bass shelf
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 
@@ -156,6 +169,17 @@ class SongKey:
     gain_db: float | None = None
     lowpass: float | None = None
     highpass: float | None = None
+    bass_db: float | None = None
+    compress: float | None = None
+
+
+@dataclass(frozen=True)
+class Compressor:
+    threshold_db: float = -20.0
+    ratio: float = 4.0
+    attack: float = 0.01
+    release: float = 0.15
+    makeup_db: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -181,6 +205,7 @@ class Song:
     fade_out: float = 0.0
     keyframes: tuple[SongKey, ...] = ()
     filter_slope: int = 24
+    compress: Compressor | None = None
     tail: Tail | None = None
 
 
@@ -464,6 +489,16 @@ def song_gain_db(song: Song, t: float) -> float:
     return interpolate(track(song, "gain_db"), 0.0, t)
 
 
+def song_bass_db(song: Song, t: float) -> float:
+    """dB the song's bass shelf adds at output time `t`."""
+    return interpolate(track(song, "bass_db"), 0.0, t)
+
+
+def song_compress(song: Song, t: float) -> float:
+    """How much of the compressed song plays at output time `t`, 0 to 1; 1 with no compress keys."""
+    return interpolate(track(song, "compress"), 1.0, t)
+
+
 def song_highpass(song: Song, t: float) -> float:
     """The song's high-pass cutoff in Hz at output time `t`, interpolated in octaves."""
     octaves = [(k, math.log2(v), ease) for k, v, ease in track(song, "highpass")]
@@ -703,9 +738,21 @@ def check(edl: Edl) -> list[str]:
         for name, cutoff in (("lowpass", song_key.lowpass), ("highpass", song_key.highpass)):
             if cutoff is not None:
                 within(cutoff, OPEN_HIGHPASS, OPEN_LOWPASS, f"{kp}.{name}")
+        if song_key.bass_db is not None:
+            within(song_key.bass_db, -24, 24, f"{kp}.bass_db")
+        if song_key.compress is not None:
+            within(song_key.compress, 0, 1, f"{kp}.compress")
+            need(song.compress is not None, f"{kp}.compress", "needs song.compress to set the compressor")
     if song.keyframes:
         need(song.keyframes[-1].t <= duration + 1 / fps + 1e-6, "song.keyframes",
              f"the last keyframe ({_s(song.keyframes[-1].t)}) is past the {_s(duration)} output")
+    compressor = song.compress
+    if compressor is not None:
+        within(compressor.threshold_db, -60, 0, "song.compress.threshold_db")
+        within(compressor.ratio, 1, 20, "song.compress.ratio")
+        within(compressor.attack, 0.0001, 2, "song.compress.attack")
+        within(compressor.release, 0.001, 9, "song.compress.release")
+        within(compressor.makeup_db, 0, 36, "song.compress.makeup_db")
     tail = song.tail
     if tail is not None:
         within(tail.seconds, 0.05, 30, "song.tail.seconds")
