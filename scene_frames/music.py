@@ -2,10 +2,10 @@
 
 Everything here is a fact about what changes in the signal: which stems play when, where drums or bass come in
 or leave, where the band drops away under the voice, where everything stops, where a stem stops repeating its
-loop, what the bass root is per bar, and how loud and how high the voice sits per section. Nothing is labelled
-with a mood. The methods and thresholds come from the song-analysis trial (out/song-analysis-trial/report.md),
-which checked them against lane plots, the White Light breakdown and reference edits; docs/edit_analysis.md
-explains each one.
+loop, where a stem changes sound at a steady level, what the bass root is per bar, and how loud and how high the
+voice sits per section. Nothing is labelled with a mood. The methods and thresholds come from the song-analysis
+trial (out/song-analysis-trial/report.md), which checked them against lane plots, the White Light breakdown and
+reference edits; docs/edit_analysis.md explains each one.
 """
 from collections.abc import Mapping, Sequence
 import dataclasses
@@ -25,7 +25,7 @@ from numpy.typing import NDArray
 
 Arr = NDArray[np.float64]
 Audio = NDArray[np.float32]
-Change = Literal["enters", "exits", "up", "down", "loop_break"]
+Change = Literal["enters", "exits", "up", "down", "loop_break", "sound"]
 
 STEMS: Final = ("drums", "bass", "other", "vocals")
 BAND: Final = ("drums", "bass", "other")   # everything but the vocal
@@ -51,6 +51,13 @@ LOOP_LAGS: Final = (8, 16)    # beats back: two bars, or two bars at a doubled b
 LOOP_REPEATS: Final = 0.8     # a stem repeats its loop when beats correlate this well with the same beat back
 LOOP_DROP: Final = 0.12       # a break: the next bar's median correlation falls this far under the last two bars'
 LOOP_STEMS: Final = ("drums", "bass", "other")
+SOUND_WINDOW: Final = 2.0     # seconds either side for a stem's change of sound: medians of 0.25 s blocks
+SOUND_SEARCH: Final = 0.75    # a change of sound is looked for this close to a section boundary of the mix
+SOUND_MIN: Final = 4.0        # combined effect size of the flatness and centroid steps
+SOUND_SPREAD: Final = (0.25, 0.08)  # octaves; the least spread an effect size divides by (flatness, centroid)
+SOUND_HOLD: Final = 0.5       # the window after next keeps at least this share of a step, so the change persists
+SOUND_HOP: Final = 256
+SOUND_STEMS: Final = ("drums", "other")  # a tonal bass's centroid follows its note, and its flatness sits at the floor
 VOICE_RATE, VOICE_HOP = 16000, 320            # pyin on the vocal stem: 20 ms frames
 VOICE_MIN_FRAMES: Final = 25  # half a second of voiced frames before a section gets a pitch
 VOICE_MIN_RANGE: Final = 1.5  # semitones; a narrower p10-p90 is bleed locked on by pyin, not singing
@@ -82,6 +89,8 @@ class StemEvent:
     final: bool = False       # exits for the rest of the song
     voice: bool | None = None  # band only: whether the vocal stem plays across it
     loop: tuple[float, float] | None = None  # loop_break: correlation with two bars back, before and after
+    flatness: tuple[float, float] | None = None  # sound: median spectral flatness before and after
+    centroid: tuple[float, float] | None = None  # sound: median spectral centroid before and after, Hz
 
 
 @dataclass(frozen=True)
@@ -529,6 +538,100 @@ def _groups(indices: Sequence[int], gap: int) -> list[list[int]]:
 def _within(a: float, b: float, runs: Sequence[tuple[float, float]]) -> bool:
     """One run covers all of [a, b]."""
     return any(start <= a and b <= end for start, end in runs)
+
+
+# Sound at a steady level
+
+def _block_medians(x: Arr, hop: int, rate: int, block: float) -> Arr:
+    """Medians of frame values over consecutive blocks of `block` seconds."""
+    per = block * rate / hop
+    edges = np.round(np.arange(int(x.size / per) + 1) * per).astype(int)
+    return np.array([np.median(x[a:b]) for a, b in zip(edges, edges[1:])], dtype=np.float64)
+
+
+def _sound(y: Audio, rate: int) -> tuple[Arr, Arr]:
+    """log2 spectral flatness and log2 spectral centroid per frame, SOUND_HOP apart."""
+    import librosa
+    spec = np.abs(librosa.stft(y, n_fft=2048, hop_length=SOUND_HOP))
+    flat = np.log2(librosa.feature.spectral_flatness(S=spec)[0].astype(np.float64) + 1e-6)
+    cent = np.log2(librosa.feature.spectral_centroid(S=spec, sr=rate)[0].astype(np.float64) + 1)
+    return flat, cent
+
+
+def _effect(x: Arr, i: int, w: int, floor: float) -> float:
+    """The step in x at block i (median of the w blocks after minus the w before) over the spread inside the
+    windows, at least `floor`; 0 when the w blocks after those don't keep SOUND_HOLD of the step."""
+    before, after = x[i - w:i], x[i:i + w]
+    step = float(np.median(after) - np.median(before))
+
+    def mad(v: Arr) -> float:
+        return float(np.median(np.abs(v - np.median(v))))
+
+    spread = 1.4826 * math.sqrt((mad(before) ** 2 + mad(after) ** 2) / 2)
+    later = x[i + w:i + 2 * w]
+    kept = (float(np.median(later)) - float(np.median(before))) * np.sign(step) if later.size else 0.0
+    if later.size >= w // 2 and kept < SOUND_HOLD * abs(step):
+        return 0.0
+    return step / max(spread, floor)
+
+
+def _refine_sound(fine: Arr, coarse: float) -> float:
+    """Move a change of sound to the 50 ms block within SOUND_SEARCH where the means of the half second either
+    side of `fine` (a series that rises across the change) differ most. Medians would tie across a plateau half
+    a window wide either side of a clean step."""
+    h = round(0.5 / FINE)
+    a, b = max(h, round((coarse - SOUND_SEARCH) / FINE)), min(fine.size - h, round((coarse + SOUND_SEARCH) / FINE))
+    if b <= a:
+        return coarse
+    steps = [float(np.mean(fine[k:k + h]) - np.mean(fine[k - h:k])) for k in range(a, b + 1)]
+    return (a + int(np.argmax(steps))) * FINE
+
+
+def sound_changes(stems: Mapping[str, Audio], levels: Levels, rate: int, beats: Sequence[float],
+                  acts: Sequence[StemActivity], boundaries: Sequence[float],
+                  events: Sequence[StemEvent]) -> list[StemEvent]:
+    """Where drums or other change sound at a steady level: a layer comes in or leaves without the stem getting
+    louder or quieter. Only at section boundaries of the mix (`boundaries`) that no stem event within TURN_GAP
+    explains, since a stem's sound moves all the time and only the moves that also change the mix are turns.
+    There, a stem that plays through SOUND_WINDOW either side and moves less than STEP_DB is a change when the
+    steps of its log spectral flatness and log centroid, each over the spread inside the windows, combine to
+    SOUND_MIN or more and persist through the window after. The time is refined to 50 ms and snapped to a beat."""
+    free = [b for b in boundaries if all(abs(e.time - b) > TURN_GAP for e in events)]
+    w = round(SOUND_WINDOW / BLOCK)
+    out: list[StemEvent] = []
+    for act in acts:
+        if act.stem not in SOUND_STEMS or not act.present or act.faint or not free:
+            continue
+        flat, cent = _sound(stems[act.stem], rate)
+        series = [_block_medians(x, SOUND_HOP, rate, BLOCK) for x in (flat, cent)]
+        env = levels.stems[act.stem]
+        n = min(env.size, series[0].size)
+        for boundary in free:
+            best: tuple[float, int, float, float] | None = None
+            for i in range(round((boundary - SOUND_SEARCH) / BLOCK), round((boundary + SOUND_SEARCH) / BLOCK) + 1):
+                if i < w or i + w > n or not _within((i - w) * BLOCK, (i + w) * BLOCK, act.runs):
+                    continue
+                if abs(float(np.median(env[i:i + w]) - np.median(env[i - w:i]))) >= STEP_DB:
+                    continue
+                ef, ec = (_effect(x, i, w, floor) for x, floor in zip(series, SOUND_SPREAD))
+                score = math.hypot(ef, ec)
+                if best is None or score > best[0]:
+                    best = (score, i, ef, ec)
+            if best is None or best[0] < SOUND_MIN:
+                continue
+            _, i, ef, ec = best
+            fine = (ef * _block_medians(flat, SOUND_HOP, rate, FINE) / SOUND_SPREAD[0]
+                    + ec * _block_medians(cent, SOUND_HOP, rate, FINE) / SOUND_SPREAD[1])
+            t = snap(_refine_sound(fine, i * BLOCK), beats)
+            k = min(max(w, round(t / BLOCK)), n - w)
+            f0, f1, c0, c1 = (float(2 ** np.median(x[a:b])) for x in series for a, b in ((k - w, k), (k, k + w)))
+            db = float(np.median(env[k:k + w]) - np.median(env[k - w:k]))
+            if abs(db) >= STEP_DB:
+                continue  # at the change itself the level steps after all
+            out.append(StemEvent(round(t, 2), act.stem, "sound", round(db, 1),
+                                 flatness=(float(f"{f0:.3g}"), float(f"{f1:.3g}")),
+                                 centroid=(float(round(c0 - 1)), float(round(c1 - 1)))))
+    return sorted(out, key=lambda e: e.time)
 
 
 # Pitch

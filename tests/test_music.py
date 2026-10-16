@@ -175,6 +175,56 @@ class LoopTests(unittest.TestCase):
         self.assertGreater(breaks[0].loop[0], 0.9)
 
 
+def held_then_layer(change_at: float, layer_for: float, total: float = 20.0, after_gain: float = 1.0) -> np.ndarray:
+    """A held G (196 + 392 Hz) that turns into a held E (165 Hz) with a noise layer at the same RMS (0.2) for
+    `layer_for` seconds from `change_at`, then back to the held G. `after_gain` scales the changed stretch."""
+    rng = np.random.default_rng(0)
+    held = tone(total, 196, 0.2) + tone(total, 392, 0.2)
+    layer = tone(total, 165, 0.2) + rng.normal(0, 0.141, int(total * RATE)).astype(np.float32)
+    t = np.arange(held.size) / RATE
+    inside = (t >= change_at) & (t < change_at + layer_for)
+    return np.where(inside, after_gain * layer, held).astype(np.float32)
+
+
+class SoundTests(unittest.TestCase):
+    BEATS = list(np.arange(0, 20, BEAT))
+
+    def changes(self, other: np.ndarray, boundaries: list[float],
+                events: list[music.StemEvent] | None = None) -> list[music.StemEvent]:
+        stems = stems_with(other=other, drums=np.tile(pattern_bar(3), 5))
+        levels = music.stem_levels(stems, sum(stems.values()), RATE)
+        acts, found = music.activity(stems, levels, RATE, self.BEATS)
+        return music.sound_changes(stems, levels, RATE, self.BEATS, acts, boundaries, (events or []) + found)
+
+    def test_layer_at_the_same_level(self):
+        found = self.changes(held_then_layer(8.0, 12.0), [8.0])
+        self.assertEqual([(e.part, e.change, e.time) for e in found], [("other", "sound", 8.0)])
+        e = found[0]
+        assert e.db is not None and e.flatness is not None and e.centroid is not None
+        self.assertLess(abs(e.db), 2.0)
+        self.assertGreater(e.flatness[1], 10 * e.flatness[0])
+        self.assertGreater(e.centroid[1], e.centroid[0] + 1000)
+        # The search reaches SOUND_SEARCH either side of the boundary; a later boundary has nothing to find.
+        self.assertEqual([e.time for e in self.changes(held_then_layer(8.0, 12.0), [7.5])], [8.0])
+        self.assertEqual(self.changes(held_then_layer(8.0, 12.0), [14.0]), [])
+
+    def test_only_unexplained_boundaries(self):
+        # A stem event within TURN_GAP already marks the boundary.
+        self.assertEqual(self.changes(held_then_layer(8.0, 12.0), [8.0], [music.StemEvent(9.0, "bass", "enters")]),
+                         [])
+
+    def test_level_steps_and_short_changes_are_not_sound_changes(self):
+        # 8 dB louder: a level step, not a change of sound, even when no step event explains the boundary.
+        louder = held_then_layer(8.0, 12.0, after_gain=2.5)
+        stems = stems_with(other=louder, drums=np.tile(pattern_bar(3), 5))
+        levels = music.stem_levels(stems, sum(stems.values()), RATE)
+        acts, found = music.activity(stems, levels, RATE, self.BEATS)
+        self.assertEqual([(e.part, e.change) for e in found], [("other", "up")])
+        self.assertEqual(music.sound_changes(stems, levels, RATE, self.BEATS, acts, [8.0], []), [])
+        # A layer that leaves within the bar (2 s here) doesn't persist through the window after.
+        self.assertEqual(self.changes(held_then_layer(8.0, 1.5), [8.0]), [])
+
+
 class PitchTests(unittest.TestCase):
     def test_bass_roots_per_bar(self):
         beats = list(np.arange(0, 16.01, BEAT))
@@ -225,14 +275,17 @@ class TempoTests(unittest.TestCase):
 class JsonTests(unittest.TestCase):
     def test_round_trip_and_shift(self):
         turn = music.Turn(4.0, [music.StemEvent(4.0, "band", "up", 12.0, voice=True),
-                                music.StemEvent(4.5, "other", "loop_break", loop=(0.9, 0.7))], 12.0, None)
+                                music.StemEvent(4.5, "other", "loop_break", loop=(0.9, 0.7)),
+                                music.StemEvent(4.6, "other", "sound", 0.4, flatness=(0.002, 0.011),
+                                                centroid=(1480.0, 1970.0))], 12.0, None)
         act = music.StemActivity("bass", -12.0, -32.0, True, False, [(4.0, 9.5)])
         harmony = music.Harmony(1, [music.Bar(0.5, 2.5, "A"), music.Bar(2.5, 4.5, None)])
         for obj in (turn, act, harmony):
             data = json.loads(json.dumps(dataclasses.asdict(obj)))
             self.assertEqual(music.from_json(type(obj), data), obj)
         later = music.shift_times(turn, 1.0)
-        self.assertEqual([e.time for e in later.events], [5.0, 5.5])
+        self.assertEqual([e.time for e in later.events], [5.0, 5.5, 5.6])
+        self.assertEqual(later.events[2].centroid, (1480.0, 1970.0))
         self.assertEqual(later.time, 5.0)
         self.assertEqual(music.shift_times(act, 1.0).runs, [(5.0, 10.5)])
         self.assertEqual(music.shift_times(harmony, 1.0).bars[1], music.Bar(3.5, 5.5, None))

@@ -33,7 +33,7 @@ Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 1, 3, 2, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 1, 4, 2, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -850,10 +850,12 @@ def analyze_audio(y: NDArray[np.float32], stems: separation.Stems, offset: float
     levels = music.stem_levels(stems, y, rate)
     acts, events = music.activity(stems, levels, rate, beats)
     events += music.loop_breaks(stems, rate, beats, acts)
+    novelty = _novelty(y, rate, beat_frames)
+    events += music.sound_changes(stems, levels, rate, beats, acts, [t for t, _ in novelty], events)
     turns = music.turns(events, levels)
     drops = [Drop(t.time, t.mix_db, t.low_db) for t in music.drops(turns)]
     stops = music.stops(y, rate, beats)
-    boundaries = _snap_boundaries(_novelty(y, rate, beat_frames), _event_times(turns, acts, stops, duration))
+    boundaries = _snap_boundaries(novelty, _event_times(turns, acts, stops, duration))
     runs = {a.stem: a.runs if a.present and not a.faint else [] for a in acts}
     vocal_runs = next(a.runs for a in acts if a.stem == "vocals")
     voice = music.voice_sections(stems["vocals"], rate, section_bounds(drops, boundaries, duration), vocal_runs)
@@ -1166,6 +1168,12 @@ def _event_text(e: music.StemEvent) -> str:
         assert e.loop is not None
         text = (_part(e.part, "stops", "stop") + f" repeating its two-bar loop (correlation {e.loop[0]:.2f} → "
                 f"{e.loop[1]:.2f})")
+    elif e.change == "sound":
+        assert e.flatness is not None and e.centroid is not None
+        ratio = max(e.flatness[1], 1e-6) / max(e.flatness[0], 1e-6)
+        text = (_part(e.part, "changes", "change") + f" sound at a steady level ({e.db or 0:+.0f} dB): spectral "
+                f"flatness {e.flatness[0]:.2g} → {e.flatness[1]:.2g} ({max(ratio, 1 / ratio):.1f}× "
+                f"{'higher' if ratio >= 1 else 'lower'}), centroid {e.centroid[0]:.0f} → {e.centroid[1]:.0f} Hz")
     elif e.part == "band":
         text = (f"the band (all but the vocal) {e.db or 0:+.0f} dB over {music.BAND_WINDOW:g} s, "
                 + ("voice continues" if e.voice else "no voice"))
@@ -1269,12 +1277,13 @@ def _turns_table(an: Analysis) -> list[str]:
     lines = ["## Turns", "",
              "Where the stems change: drums, bass or the other stem coming in or stopping, a playing stem's level "
              f"stepping {music.STEP_DB:g} dB or more ({music.STEP_WINDOW:g} s medians), the band (everything but "
-             f"the vocal) dropping out or coming back by {music.BAND_DB:g} dB or more, and a stem that stops "
-             f"repeating its loop. Events within {music.TURN_GAP:g} s are one row. Mix and low end (drums plus "
-             f"bass) compare the {music.CHANGE_WINDOW:g} s after with the {music.CHANGE_WINDOW:g} s before, as "
-             "medians.", ""]
+             f"the vocal) dropping out or coming back by {music.BAND_DB:g} dB or more, a stem that stops "
+             "repeating its loop, and, at a section boundary nothing else explains, a band stem changing sound "
+             f"(spectral flatness and centroid) at a steady level. Events within {music.TURN_GAP:g} s are one row. "
+             f"Mix and low end (drums plus bass) compare the {music.CHANGE_WINDOW:g} s after with the "
+             f"{music.CHANGE_WINDOW:g} s before, as medians.", ""]
     if not audio.turns:
-        return lines + ["No stem comes in, stops, steps or breaks its loop.", ""]
+        return lines + ["No stem comes in, stops, steps, breaks its loop or changes sound.", ""]
     drop_times = {d.time for d in audio.drops}
     lines += ["| Time (s) | m:ss | What changes | Mix (dB) | Low end (dB) |", "|---|---|---|---|---|"]
     for t in audio.turns:
