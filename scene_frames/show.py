@@ -313,6 +313,7 @@ def mentioned(name: str, names: Names, synopsis: str) -> bool:
     """Whether the synopsis mentions a character, by one of their names or aliases in full, or by a word of one that
     no other character's has, such as "Gojo" for Satoru Gojo but not "Fushiguro" when the notes have two.
     synopsis is a name_key of the text."""
+    name = canonical_name(name, names)
     own = [name_key(n) for n, who in names.items() if who == name] or [name_key(name)]
     padded = f" {synopsis} "
     if any(key and f" {key} " in padded for key in own):
@@ -430,7 +431,9 @@ def name_lines(video: Video, out: Path, name: str) -> list[str]:
         _, cast = read_context(video.group.cast)
     except (OSError, ValueError) as e:
         return [f"no shots to search: {e}"]
-    target = canonical_name(name, cast_names(cast))
+    # The names the captions give count as well as the notes', so "Nobara" finds a cameo the notes leave out.
+    target = canonical_name(name, {**{c["name"]: c["name"] for shot in shots for c in shot["characters"]},
+                                   **cast_names(cast)})
     try:
         story: list[StoryScene] = json.loads((out / "story.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):

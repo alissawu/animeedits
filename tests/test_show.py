@@ -218,6 +218,8 @@ class NameReportTests(unittest.TestCase):
                 self.assertEqual(show.mentioned(name, self.NAMES, synopsis), expected)
         self.assertTrue(show.mentioned("Café owner", self.NAMES, show.name_key("The master pours coffee.")),
                         "by an alias")
+        self.assertTrue(show.mentioned("Master", self.NAMES, show.name_key("The café owner pours coffee.")),
+                        "an alias the caption gave, by its character's name")
 
     def test_possessives_count_as_mentions(self) -> None:
         shots: list[Any] = [{"characters": [{"name": "Rin Fushiguro", "certain": True}]}]
@@ -341,6 +343,8 @@ class CommandTests(ShowTestCase):
             {"id": 1, "characters": [{"name": "Mira Sato", "certain": True}]},
             {"id": 2, "characters": [{"name": "Rin Fushiguro", "certain": False}],
              "caption_characters": shots[1]["characters"]}]}]))
+        _, printed = self.run_show("report", "--only", "S01E01", "--name", "bayer")
+        self.assertIn("1 shots name Bayer\n    0002 2.0-3.0s Bayer", printed, "names the notes don't have")
         code, printed = self.run_show("report", "--only", "S01E01", "--name", "mira")
         self.assertEqual(code, 0)
         self.assertIn(f"S01E01  (Season 1)\n  2 shots name Mira Sato\n    0001 1.0-2.0s Mira Sato  {out}/1.jpg\n"
