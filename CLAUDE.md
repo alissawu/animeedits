@@ -76,4 +76,4 @@ Things you can't see from the code:
 
 Python 3.11+, full type hints, strict mypy (`scene_frames/mypy.ini`). Tests: `.venv/bin/python -m unittest discover -s tests`.
 
-Song planning uses timeline.json with aligned lyric lines/words and uncertainty alongside beats, accent candidates, sections, drops, stops and stem events. Downbeats are explicitly unestimated. Voice shifts are review hints. Caption MP4s require --lyric-video. See docs/edit_analysis.md.
+Song planning uses timeline.json with aligned lyric lines/words and uncertainty alongside beats, accent candidates, sections, drops, stops and stem events. Downbeats and bar-numbered strong/weak beats use Beat This! joint inference by default. Voice shifts are review hints. Caption MP4s require --lyric-video. See docs/edit_analysis.md.

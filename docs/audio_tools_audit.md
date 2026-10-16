@@ -46,4 +46,10 @@ No new full-song inference/separation or paid API experiment was run as part of 
 
 ## Approved follow-up implemented
 
---lyrics now aligns the exact sung reference and embeds timed lines/words/uncertainty in timeline.json, with --alignment for reuse and --lyric-video for explicit caption rendering. Planning cues are grouped in the same file; downbeats remain explicitly unestimated. Voice shifts are labeled review hints. Existing audio.harmony JSON remains compatible.
+--lyrics now aligns the exact sung reference and embeds timed lines/words/uncertainty in timeline.json, with --alignment for reuse and --lyric-video for explicit caption rendering. Planning cues are grouped in the same file; downbeats and bar-numbered beats now use joint Beat This! inference. Voice shifts are labeled review hints. Existing audio.harmony JSON remains compatible.
+
+## Downbeat follow-up validation
+
+Tagging/key removal is committed in 578ed97. The downbeat follow-up uses beat-this 1.1.0 (final0, CPU, minimal postprocessing), not madmom. Python 3.12.3 real-model smoke on a 16-second accented click pattern produced 32 beats and 8 downbeats; a silence smoke returned empty predictions. These check execution and shape, not real-song timing accuracy.
+
+Six new rhythm tests cover pickups, variable bar lengths, offsets, empty/invalid predictions, upstream API configuration, JSON/report integration and CLI cache reuse. Related music, analysis, lyrics, lyricsync and frame suites pass; strict mypy passes 16 files. A full-suite attempt exposed four existing environment-sensitive failures, reproduced against the prior committed source: two renderer reverb errors because this ffmpeg lacks afir irnorm, and two subtitle tests with a 21ms container timestamp shift. No unrelated renderer/index changes were made.

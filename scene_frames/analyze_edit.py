@@ -14,7 +14,7 @@ are aligned independently when --lyrics is supplied. See docs/edit_analysis.md.
 import argparse
 import bisect
 from collections.abc import Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 import json
 import math
@@ -28,6 +28,7 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 import music
+import rhythm as rhythm_analysis
 import lyricsync
 import lyrics as lyric_reference
 import stems as separation
@@ -167,6 +168,8 @@ class AudioMap:
     harmony: music.Harmony    # bass root per bar
     voice: list[music.VoiceSection]  # per song section (section_bounds)
     voice_shifts: list[music.VoiceShift]
+
+    rhythm: rhythm_analysis.Rhythm | None = None
 
     @property
     def drop(self) -> Drop | None:
@@ -1072,8 +1075,10 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
                            "lines": aligned_lines(an)} if an.aligned_words is not None else None,
         "planning": {"clock": "media seconds, including audio_offset",
                      "beats": an.audio.beats if an.audio else [],
-                     "downbeats": None,
-                     "downbeats_status": "not estimated",
+                     "downbeats": an.audio.rhythm.downbeats if an.audio and an.audio.rhythm else None,
+                     "downbeats_status": an.audio.rhythm.status if an.audio and an.audio.rhythm else "not estimated",
+                     "beat_grid": [asdict(b) for b in an.audio.rhythm.beats] if an.audio and an.audio.rhythm else [],
+                     "beat_grid_method": an.audio.rhythm.method if an.audio and an.audio.rhythm else None,
                      "accents": an.audio.onsets if an.audio else [],
                      "accent_method": "strong onset candidates, not semantic emphasis",
                      "sections": [asdict(s) for s in an.sections],
@@ -1271,6 +1276,16 @@ def _skeleton(an: Analysis) -> list[str]:
     lines = ["## Skeleton", ""]
     if audio:
         lines.append(_tempo_line(audio))
+        if audio.rhythm:
+            lines += ["", f"**Downbeats and bars** ({audio.rhythm.method}; {audio.rhythm.status}). "
+                      "Bar 1 is the first detected downbeat, not necessarily the song's first bar. "
+                      "Strong/weak means downbeat/non-downbeat, not loudness. Pickups remain unknown.",
+                      "", "| Time (s) | Bar | Beat in bar | Metrical strength |",
+                      "|---|---|---|---|"]
+            lines += [f"| {b.time:.3f} | {b.bar if b.bar is not None else '?'} | "
+                      f"{b.beat_in_bar if b.beat_in_bar is not None else '?'} | {b.strength} |"
+                      for b in audio.rhythm.beats]
+            lines.append("")
         drop = audio.drop
         if drop is not None:
             turn = next(t for t in audio.turns if t.time == drop.time)
@@ -1536,6 +1551,7 @@ def main() -> None:
     ap.add_argument("--whisper-model", default="small.en",
                     help="faster-whisper model for word timings (default small.en)")
     ap.add_argument("--lang", help="language code for a multilingual Whisper model; default auto-detect")
+    ap.add_argument("--no-downbeats", action="store_true", help="skip joint beat/downbeat model inference")
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
     ap.add_argument("--lyrics", type=Path, help="published lyrics as LRC or text; kept separate from recognition")
     ap.add_argument("--lyrics-source", help="URL or attribution for --lyrics (defaults to its local path)")
@@ -1595,6 +1611,15 @@ def main() -> None:
             save(cache / "audio.json", {"signature": audio_sig, "data": asdict(audio)})
         else:
             audio = audio_from_json(data)
+        if not a.no_downbeats:
+            rhythm_sig = source | {"version": 1, "method": rhythm_analysis.METHOD, "offset": info.audio_offset}
+            rhythm_data = cached(cache / "rhythm.json", rhythm_sig)
+            if rhythm_data is None:
+                grid = rhythm_analysis.estimate(decode_audio(media), SAMPLE_RATE, info.audio_offset)
+                save(cache / "rhythm.json", {"signature": rhythm_sig, "data": asdict(grid)})
+            else:
+                grid = music.from_json(rhythm_analysis.Rhythm, rhythm_data)
+            audio = replace(audio, rhythm=grid)
         drop = audio.drop
         print(f"audio: {audio.tempo:.1f} BPM, {_count(len(audio.turns), 'turn')}"
               f"{f', drop at {drop.time:.2f}s' if drop else ', no drop'}", flush=True)

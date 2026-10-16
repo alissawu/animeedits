@@ -289,7 +289,7 @@ class AudioOnlyTests(unittest.TestCase):
         # Cached stems stand in for the separator, so the test needs no model.
         separation.write_stems(separation.stem_dir(self.song, cache), self.stems, self.song)
         subprocess.run([sys.executable, str(ROOT / "scene_frames/analyze_edit.py"), str(self.song), str(out),
-                        "--no-words", "--stem-cache", str(cache)], check=True, capture_output=True)
+                        "--no-words", "--no-downbeats", "--stem-cache", str(cache)], check=True, capture_output=True)
         report = (out / "report.md").read_text()
         self.assertIn("# Audio analysis", report)
         self.assertIn("## Turns", report)

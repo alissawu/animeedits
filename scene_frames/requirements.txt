@@ -16,3 +16,6 @@ audio-separator[cpu]>=0.47,<0.48
 # audio-separator imports audioread, which librosa 1.0 no longer installs.
 audioread>=3
 soundfile>=0.12
+
+# Joint beat/downbeat tracking, Python 3.12; minimal postprocessing avoids madmom.
+beat-this==1.1.0
