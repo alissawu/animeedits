@@ -8,6 +8,7 @@ import sys
 import tempfile
 from typing import Any
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -15,6 +16,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
 from edl import EdlError, Output, parse_edl
 import render
+import separate
+from separate import SeparationError, VoiceSeparator
 
 FPS = 20
 W, H = 72, 128  # 9:16 output from 64x36 (16:9) sources
@@ -373,6 +376,132 @@ class LongClipTests(unittest.TestCase):
             self.assertGreaterEqual(shown[-1] - shown[0], 142)
 
 
+def keep_band(mix: np.ndarray, freq: float, width: float = 300) -> np.ndarray:
+    """Only the part of `mix` (channels, samples at separate.RATE) within `width` Hz of `freq`."""
+    spectrum = np.fft.rfft(mix, axis=1)
+    freqs = np.fft.rfftfreq(mix.shape[1], 1 / separate.RATE)
+    spectrum[:, np.abs(freqs - freq) > width] = 0
+    return np.fft.irfft(spectrum, n=mix.shape[1], axis=1).astype(np.float32)
+
+
+# Output 0-4 s over a 440 Hz song. film.mp4's soundtrack: a 3 kHz "score" throughout and a 1 kHz "voice"
+# from 2.0 to 3.0 s. Layer 0 plays source 1.5-3.5 from 0.5 s, so the voice lands at 1.0-2.0 s; layer 1
+# plays source 0.3-0.8 (no voice) from 3.0 s, where the context before it is cut short by the source start.
+STEM_EDL: dict[str, Any] = {
+    "output": {"width": 32, "height": 32, "fps": 24},
+    "song": {"source": "song.wav", "src_in": 0.0, "src_out": 4.0},
+    "clips": [{"source": "red.mp4", "src_in": 0.0, "timeline_in": 0.0, "timeline_out": 4.0}],
+    "audio": [{"source": "film.mp4", "src_in": 1.5, "src_out": 3.5, "timeline_in": 0.5, "stem": "voice",
+               "fade_in": 0.0, "fade_out": 0.0, "why": "the line"},
+              {"source": "film.mp4", "src_in": 0.3, "src_out": 0.8, "timeline_in": 3.0, "stem": "voice"}],
+}
+
+
+@unittest.skipIf(shutil.which("ffmpeg") is None, "ffmpeg not on PATH")
+class VoiceStemTests(unittest.TestCase):
+    """stem "voice" with a stand-in separator that keeps only 1 kHz, so no model is needed."""
+    tmp: tempfile.TemporaryDirectory[str]
+    root: Path
+    calls: list[int]
+    summary: str
+    voice: np.ndarray
+    mix: np.ndarray
+
+    @staticmethod
+    def fake(separator: VoiceSeparator, mix: np.ndarray) -> np.ndarray:
+        VoiceStemTests.calls.append(mix.shape[1])
+        return keep_band(mix, 1000)
+
+    @classmethod
+    def render(cls, edl: dict[str, Any], name: str) -> str:
+        with mock.patch.object(VoiceSeparator, "separate", cls.fake):
+            return render.render(write_edl(cls.root, f"{name}.json", edl), cls.root / name / "edit.mp4")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory(prefix="stem-test-")
+        cls.root = Path(cls.tmp.name)
+        cls.calls = []
+        ffmpeg("-f", "lavfi", "-i", "color=c=red:s=64x36:r=24:d=5", "-c:v", "libx264", "-preset", "ultrafast",
+               "-pix_fmt", "yuv420p", str(cls.root / "red.mp4"))
+        ffmpeg("-f", "lavfi", "-i", "sine=f=440:d=5:sample_rate=44100,volume=0.25", str(cls.root / "song.wav"))
+        ffmpeg("-f", "lavfi", "-i", "color=c=gray:s=64x36:r=24:d=5", "-filter_complex",
+               "sine=f=3000:d=5:sample_rate=48000[s];"
+               "sine=f=1000:d=1:sample_rate=48000,volume=2,adelay=2000:all=1,apad=whole_dur=5[v];"
+               "[s][v]amix=inputs=2:normalize=0[a]",
+               "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "256k", "-shortest", str(cls.root / "film.mp4"))
+        cls.summary = cls.render(STEM_EDL, "voice")
+        cls.voice = decode_audio(cls.root / "voice" / "edit.mp4")
+        mixed = copy.deepcopy(STEM_EDL)
+        for layer in mixed["audio"]:
+            del layer["stem"]
+        render.render(write_edl(cls.root, "mix.json", mixed), cls.root / "mix" / "edit.mp4")
+        cls.mix = decode_audio(cls.root / "mix" / "edit.mp4")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def test_keeps_the_voice_and_drops_the_score(self) -> None:
+        self.assertGreater(tone(self.mix, 3000, 0.6, 2.4), 0.05)
+        self.assertLess(tone(self.voice, 3000, 0.6, 2.4), 0.002)
+        self.assertLess(tone(self.voice, 3000, 3.05, 3.45), 0.002)
+        level = tone(self.voice, 1000, 1.1, 1.9) / tone(self.mix, 1000, 1.1, 1.9)
+        self.assertAlmostEqual(level, 1.0, delta=0.03)
+        self.assertGreater(tone(self.voice, 440, 0.1, 0.4), 0.02)  # the song is untouched
+
+    def test_voice_lands_where_the_mix_would(self) -> None:
+        a = keep_band(self.voice[None, round(0.8 * SR):round(1.2 * SR)], 1000)[0]
+        b = keep_band(self.mix[None, round(0.8 * SR):round(1.2 * SR)], 1000)[0]
+        lags = range(-48, 49)
+        lag = max(lags, key=lambda d: float(np.dot(a[48 + d:len(a) - 48 + d], b[48:len(b) - 48])))
+        self.assertLessEqual(abs(lag), 2)
+        self.assertLess(tone(self.voice, 1000, 0.9, 0.98), 0.01)
+        self.assertGreater(tone(self.voice, 1000, 1.02, 1.1), 0.1)
+
+    def test_separator_hears_context_clamped_to_the_source(self) -> None:
+        rate = separate.RATE
+        expected = [(2.0 + 2 * render.STEM_CONTEXT) * rate, (0.5 + 0.3 + render.STEM_CONTEXT) * rate]
+        self.assertEqual(len(self.calls), 2)
+        for got, want in zip(self.calls, expected):
+            self.assertLessEqual(abs(got - want), rate // 1000)
+        self.assertIn("2 voice stems separated, 0 cached", self.summary)
+        self.assertIn("film.mp4 (track 0, voice)", (self.root / "voice" / "edl_table.md").read_text())
+
+    def test_stems_are_cached_by_source_span(self) -> None:
+        out = self.root / "cached"
+        shutil.copytree(self.root / "voice" / render.CACHE_DIR, out / render.CACHE_DIR)
+        edl = copy.deepcopy(STEM_EDL)
+        edl["audio"][0].update(gain_db=-3.0, duck_db=-6.0, timeline_in=0.6, why="moved and quieter")
+        before = len(self.calls)
+        self.assertIn("0 voice stems separated, 2 cached", self.render(edl, "cached"))
+        self.assertEqual(len(self.calls), before)
+        edl["audio"][0]["src_in"] = 1.6
+        self.assertIn("1 voice stems separated, 1 cached", self.render(edl, "cached"))
+        self.assertEqual(len(list((out / render.CACHE_DIR).glob("stem_*.wav"))), 2)  # the stale one is gone
+
+    def test_audio_near_the_source_start_is_not_shifted(self) -> None:
+        film = self.root / "film.mp4"
+        for start in (0.0, 0.01, 1.5):  # an input seek this close to the start would drop 21 ms of AAC
+            spec, trim = render.audio_source(film, render.probe(film), start, 3.0)
+            raw = subprocess.run(["ffmpeg", "-v", "error", *spec, "-map", "0:a:0", "-af", f"{trim},aresample={SR}",
+                                  "-ac", "1", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+            audio = np.frombuffer(raw, np.float32)
+            self.assertLess(abs(len(audio) / SR - (3.0 - start)), 0.001, start)
+            onset = 2.0 - start  # the 1 kHz voice starts at source 2.0 s
+            self.assertLess(tone(audio, 1000, onset - 0.03, onset - 0.005), 0.01, start)
+            self.assertGreater(tone(audio, 1000, onset + 0.005, onset + 0.03), 0.1, start)
+
+    def test_separator_failure_names_the_layer(self) -> None:
+        def broken(separator: VoiceSeparator, mix: np.ndarray) -> np.ndarray:
+            raise SeparationError("model exploded")
+        with mock.patch.object(VoiceSeparator, "separate", broken), self.assertRaises(render.RenderError) as ctx:
+            render.render(write_edl(self.root, "broken.json", STEM_EDL), self.root / "broken" / "edit.mp4")
+        self.assertIn("separating the voice in film.mp4 from 1.500 s: model exploded", str(ctx.exception))
+        self.assertFalse(list((self.root / "broken" / render.CACHE_DIR).glob("stem_*")))
+
+
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
         with self.assertRaises(EdlError) as ctx:
@@ -394,6 +523,12 @@ class EdlValidationTests(unittest.TestCase):
         edl["clips"][1]["sync"] = "vibes"
         self.assertIn('clips[1].sync: must be one of beat, drop, word, phrase_end, motion, free, got "vibes"',
                       self.problems(edl))
+
+    def test_audio_stem_defaults_to_the_mix(self) -> None:
+        self.assertEqual(parse_edl(EDL).audio[0].stem, "mix")
+        edl = copy.deepcopy(EDL)
+        edl["audio"][0]["stem"] = "music"
+        self.assertIn('audio[0].stem: must be one of mix, voice, got "music"', self.problems(edl))
 
     def test_unknown_field_suggests_fix(self) -> None:
         edl = copy.deepcopy(EDL)
