@@ -3,10 +3,11 @@
 usage: python render.py EDL.json OUT.mp4 [--check] [--jobs N] [--crf N] [--preset P] [--verbose]
 
 Each clip is normalized (seek, speed, reverse, crop, color) into a cached segment of
-exactly its frame count. One ffmpeg filtergraph then lays the segments end to end and
-composites crossfades, overlays, flashes, captions, the ending fade and the audio mix.
-Writes OUT.mp4, proof.jpg and edl_table.md, and keeps segments in render_cache/ next to
-OUT.mp4 so re-renders only redo changed clips. The schema is documented in edl.py.
+exactly its frame count, and each audio layer with stem "voice" into a cached voice stem.
+One ffmpeg filtergraph then lays the segments end to end and composites crossfades,
+overlays, flashes, captions, the ending fade and the audio mix. Writes OUT.mp4, proof.jpg
+and edl_table.md, and keeps segments and stems in render_cache/ next to OUT.mp4 so
+re-renders only redo changed clips and lines. The schema is documented in edl.py.
 """
 import argparse
 from collections.abc import Sequence
@@ -24,10 +25,13 @@ import shutil
 import subprocess
 import sys
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from edl import (DUCK_RAMP, Caption, Clip, Color, Edl, EdlError, Output, clip_frames, crossfade_handle, load_edl,
                  output_frames, reveal_frames, source_end, source_offset, span_frames, speed_range, to_frame, track)
+import separate
+from separate import SeparationError, VoiceSeparator
 
 SAMPLE_RATE = 48000
 CACHE_DIR = "render_cache"
@@ -514,6 +518,74 @@ def write_caption_track(edl: Edl, edl_dir: Path, directory: Path) -> tuple[Path,
     return listing, _balanced_sum([window(s, e, fps) for s, e in spans])
 
 
+# ---- voice stems ----
+
+STEM_CONTEXT = 1.0  # seconds of soundtrack the separator hears either side of a span; the stem is cut to the span
+STEM_VERSION = 1
+
+
+@dataclass(frozen=True)
+class Stem:
+    """The voice in one audio layer's source span, separated once and cached as a WAV file."""
+    source: Path
+    probe: Probe
+    track: int
+    src_in: float
+    src_out: float
+
+    def key(self) -> str:
+        stat = self.source.stat()
+        # Gain, fades, ducking and placement are applied in the mix, so they do not change the stem.
+        data = {"v": STEM_VERSION, "model": separate.MODEL, "overlap": separate.OVERLAP, "context": STEM_CONTEXT,
+                "source": str(self.source), "size": stat.st_size, "mtime": stat.st_mtime_ns, "track": self.track,
+                "src_in": self.src_in, "src_out": self.src_out}
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def plan_stems(edl: Edl, edl_dir: Path, probes: dict[Path, Probe]) -> dict[int, Stem]:
+    """Voice stems by audio layer index."""
+    stems: dict[int, Stem] = {}
+    for k, layer in enumerate(edl.audio):
+        if layer.stem == "voice":
+            file = resolve(edl_dir, layer.source)
+            stems[k] = Stem(file, probes[file], layer.track, layer.src_in, layer.src_out)
+    return stems
+
+
+def render_stem(stem: Stem, separator: VoiceSeparator, file: Path, verbose: bool) -> None:
+    """Separate the span with STEM_CONTEXT either side (clamped to the source), keep the span."""
+    rate = separate.RATE
+    start = max(0.0, stem.src_in - STEM_CONTEXT)
+    end = stem.src_out + STEM_CONTEXT
+    if stem.probe.duration is not None:
+        end = min(end, stem.probe.duration)
+    what = f"separating the voice in {stem.source.name} from {stem.src_in:.3f} s"
+    spec, trim = audio_source(stem.source, stem.probe, start, end)
+    raw = run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", *spec, "-map", f"0:a:{stem.track}", "-af",
+               f"{trim},aresample={rate},aformat=sample_fmts=flt:channel_layouts=stereo", "-f", "f32le", "-"],
+              what, verbose)
+    mix = np.frombuffer(raw, dtype="<f4").reshape(-1, 2).T
+    first = round((stem.src_in - start) * rate)
+    count = round((stem.src_out - stem.src_in) * rate)
+    if mix.shape[1] == 0 or mix.shape[1] < first + count - rate // 100:
+        raise RenderError(f"{what}: read {mix.shape[1] / rate:.3f} s of audio, expected {end - start:.3f} s; "
+                          "the source ends early")
+    try:
+        voice = separator.separate(mix)[:, first:first + count]
+    except SeparationError as e:
+        raise RenderError(f"{what}: {e}") from e
+    voice = np.pad(voice, ((0, 0), (0, count - voice.shape[1])))
+    partial = file.with_name(file.stem + ".partial.wav")
+    try:
+        run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "f32le", "-ar", str(rate), "-ac", "2",
+             "-i", "-", "-c:a", "pcm_f32le", str(partial)], what, verbose,
+            data=np.ascontiguousarray(voice.T, dtype="<f4").tobytes())
+    except RenderError:
+        partial.unlink(missing_ok=True)
+        raise
+    partial.replace(file)
+
+
 # ---- composite ----
 
 def window(start: int, end: int, fps: int) -> str:
@@ -521,9 +593,13 @@ def window(start: int, end: int, fps: int) -> str:
     return f"between(t,{(start - 0.5) / fps:.6f},{(end - 0.5) / fps:.6f})"
 
 
+SEEK_FROM = 1.0  # an input seek to within one audio frame of the start (21 ms of AAC) drops that frame
+
+
 def audio_source(file: Path, pr: Probe, src_in: float, src_out: float) -> tuple[list[str], str]:
-    """Input args and leading filter for an audio window: seek in video containers, trim exactly in audio files."""
-    if pr.video_index is not None:
+    """Input args and leading filter for an audio window: seek in video containers, trim exactly in audio
+    files and near the start of a video."""
+    if pr.video_index is not None and src_in >= SEEK_FROM:
         return ["-ss", f"{src_in:.6f}", "-t", f"{src_out - src_in:.6f}", "-i", str(file)], "asetpts=PTS-STARTPTS"
     return ["-i", str(file)], f"atrim=start={src_in:.6f}:end={src_out:.6f},asetpts=PTS-STARTPTS"
 
@@ -547,8 +623,9 @@ def duck_expression(edl: Edl) -> str | None:
 
 
 def composite_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], picture_list: Path,
-                      handles: dict[int, Path], captions: tuple[Path, str] | None,
+                      handles: dict[int, Path], stems: dict[int, Path], captions: tuple[Path, str] | None,
                       file: Path, crf: int, preset: str) -> list[str]:
+    """The final ffmpeg command. handles are crossfade handles by clip index, stems voice WAVs by audio layer."""
     out = edl.output
     fps, total = out.fps, output_frames(edl)
     samples = round(total * SAMPLE_RATE / fps)
@@ -642,8 +719,12 @@ def composite_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], pictur
 
     mix = ["[song]"]
     for k, audio in enumerate(edl.audio):
-        source = resolve(edl_dir, audio.source)
-        spec, trim = audio_source(source, probes[source], audio.src_in, audio.src_out)
+        if k in stems:  # already cut to the span
+            spec, trim, stream = ["-i", str(stems[k])], "asetpts=PTS-STARTPTS", 0
+        else:
+            source = resolve(edl_dir, audio.source)
+            spec, trim = audio_source(source, probes[source], audio.src_in, audio.src_out)
+            stream = audio.track
         length = audio.src_out - audio.src_in
         filters = [trim, stereo]
         if audio.gain_db:
@@ -654,7 +735,7 @@ def composite_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], pictur
             filters.append(f"afade=t=out:st={length - audio.fade_out:.6f}:d={audio.fade_out!r}")
         delay = round(to_frame(audio.timeline_in, fps) * SAMPLE_RATE / fps)
         filters.append(f"adelay=delays={delay}S:all=1")
-        chains.append(f"[{add(*spec)}:a:{audio.track}]{','.join(filters)}[a{k}]")
+        chains.append(f"[{add(*spec)}:a:{stream}]{','.join(filters)}[a{k}]")
         mix.append(f"[a{k}]")
     master = "[song]"
     if len(mix) > 1:
@@ -728,7 +809,8 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
         for i, layer in enumerate(edl.audio):
             start = to_frame(layer.timeline_in, fps) / fps
             lines.append(f"| {i + 1} | {start:.3f}–{start + layer.src_out - layer.src_in:.3f} | "
-                         f"{_cell(layer.source)} (track {layer.track}) | {layer.src_in:.3f}–{layer.src_out:.3f} | "
+                         f"{_cell(layer.source)} (track {layer.track}{', voice' if layer.stem == 'voice' else ''}) | "
+                         f"{layer.src_in:.3f}–{layer.src_out:.3f} | "
                          f"{layer.gain_db:+g} dB | {layer.duck_db:g} dB | {_cell(layer.why or '')} |")
     if edl.overlays:
         lines += ["", "| Overlay | Time (s) | Source | Opacity | Why |", "|---|---|---|---|---|"]
@@ -813,13 +895,15 @@ def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path) -> None:
 
 # ---- driver ----
 
-def run(cmd: list[str], what: str, verbose: bool) -> None:
+def run(cmd: list[str], what: str, verbose: bool, data: bytes | None = None) -> bytes:
+    """Run ffmpeg with `data` on stdin; returns its stdout."""
     if verbose:
         print(shlex.join(cmd), file=sys.stderr)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, input=data, capture_output=True)
     if proc.returncode != 0:
-        tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
+        tail = "\n".join(proc.stderr.decode(errors="replace").strip().splitlines()[-15:])
         raise RenderError(f"ffmpeg failed while {what}:\n{tail}")
+    return proc.stdout
 
 
 def render_segment(seg: Segment, out: Output, file: Path, verbose: bool) -> None:
@@ -862,6 +946,13 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     todo = {files[seg]: seg for seg in files if not files[seg].exists()}
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         list(pool.map(lambda item: render_segment(item[1], out, item[0], verbose), todo.items()))
+    stems = plan_stems(edl, edl_dir, probes)
+    stem_files = {k: cache / f"stem_{stem.key()}.wav" for k, stem in stems.items()}
+    separating = {stem_files[k]: stem for k, stem in stems.items() if not stem_files[k].exists()}
+    if separating:  # one at a time: the model already uses the whole GPU
+        with VoiceSeparator(verbose=verbose) as separator:
+            for file, stem in separating.items():
+                render_stem(stem, separator, file, verbose)
 
     picture_list = cache / "picture.ffconcat"
     picture_list.write_text("ffconcat version 1.0\n" + "".join(_concat_line(files[seg]) for seg in picture))
@@ -871,7 +962,7 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     partial = out_path.with_name(out_path.stem + ".partial.mp4")
     try:
         run(composite_command(edl, edl_dir, probes, picture_list, {i: files[s] for i, s in handles.items()},
-                              captions, partial, crf, preset), "compositing", verbose)
+                              stem_files, captions, partial, crf, preset), "compositing", verbose)
     except RenderError:
         partial.unlink(missing_ok=True)
         raise
@@ -879,11 +970,14 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
 
     write_table(edl, edl_path.name, out_path.parent / "edl_table.md")
     write_proof(out_path, edl, edl_dir, out_path.parent / "proof.jpg")
-    keep = set(files.values())
-    for stale in cache.glob("seg_*.mp4"):
+    keep = set(files.values()) | set(stem_files.values())
+    for stale in [*cache.glob("seg_*.mp4"), *cache.glob("stem_*.wav")]:
         if stale not in keep:
             stale.unlink()
-    return f"{out_path}: {summary}; {len(todo)} segments rendered, {len(set(files.values())) - len(todo)} cached"
+    done = f"{len(todo)} segments rendered, {len(set(files.values())) - len(todo)} cached"
+    if stem_files:
+        done += f"; {len(separating)} voice stems separated, {len(set(stem_files.values())) - len(separating)} cached"
+    return f"{out_path}: {summary}; {done}"
 
 
 def positive_int(value: str) -> int:
