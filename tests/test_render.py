@@ -1,6 +1,7 @@
 """render.py and edl.py on tiny synthetic sources. Needs ffmpeg on PATH."""
 import copy
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
+import edl as edl_module
 from edl import EdlError, Output, parse_edl
 import render
 import separate
@@ -502,6 +504,220 @@ class VoiceStemTests(unittest.TestCase):
         self.assertFalse(list((self.root / "broken" / render.CACHE_DIR).glob("stem_*")))
 
 
+def make_song_sources(root: Path) -> None:
+    """steps.wav: 440 Hz for 2 s, then 660, then 880. chord.wav: 200 Hz + 5 kHz. tone.wav: 1 kHz. beep.wav: a
+    0.3 s 3 kHz sound effect. All at 48 kHz, with a red picture to cut to."""
+    ffmpeg("-f", "lavfi", "-i", "color=c=red:s=64x36:r=24:d=8", "-c:v", "libx264", "-preset", "ultrafast",
+           "-pix_fmt", "yuv420p", str(root / "red.mp4"))
+    for name, expr, seconds in (("steps", "0.1*sin(2*PI*if(lt(t,2),440,if(lt(t,4),660,880))*t)", 6),
+                                ("chord", "0.05*sin(2*PI*200*t)+0.05*sin(2*PI*5000*t)", 7),
+                                ("tone", "0.1*sin(2*PI*1000*t)", 3),
+                                ("beep", "0.1*sin(2*PI*3000*t)", 0.3)):
+        ffmpeg("-f", "lavfi", "-i", f"aevalsrc='{expr}':d={seconds}:s=48000", str(root / f"{name}.wav"))
+
+
+def song_edl(song: dict[str, Any], seconds: float, audio: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"output": {"width": 32, "height": 32, "fps": 24}, "song": song,
+            "clips": [{"source": "red.mp4", "src_in": 0.0, "timeline_in": 0.0, "timeline_out": seconds}],
+            "audio": audio or []}
+
+
+# 0-1 s open | 1-2 low-passed at 500 Hz | 2-3 open | 3-4 at -12 dB | 4-5 high-passed at 1 kHz | 5-7 open, but
+# the beep at 5.25-5.55 muffles the song to 500 Hz while it plays.
+SHAPED_EDL = song_edl({"source": "chord.wav", "src_in": 0.0, "src_out": 7.0, "keyframes": [
+    {"t": 0.0, "gain_db": 0, "lowpass": 20000, "highpass": 20},
+    {"t": 1.0, "lowpass": 500, "ease": "hold"},
+    {"t": 2.0, "lowpass": 20000, "ease": "hold"},
+    {"t": 3.0, "gain_db": -12, "ease": "hold"},
+    {"t": 4.0, "gain_db": 0, "highpass": 1000, "ease": "hold"},
+    {"t": 5.0, "highpass": 20, "ease": "hold"}]}, 7.0,
+    [{"source": "beep.wav", "timeline_in": 5.25, "muffle_hz": 500, "fade_in": 0, "why": "an impact"}])
+
+
+@unittest.skipIf(shutil.which("ffmpeg") is None, "ffmpeg not on PATH")
+class SongShapingTests(unittest.TestCase):
+    """Splices, gain and filter keyframes, muffles, tails and sound effects, rendered as audio alone."""
+    tmp: tempfile.TemporaryDirectory[str]
+    root: Path
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory(prefix="song-test-")
+        cls.root = Path(cls.tmp.name)
+        make_song_sources(cls.root)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def mix(self, edl: dict[str, Any], name: str) -> np.ndarray:
+        out = self.root / name / "mix.wav"
+        summary = render.render(write_edl(self.root, f"{name}.json", edl), out)
+        self.assertIn("audio only", summary)
+        self.assertFalse((self.root / name / "proof.jpg").exists())
+        return decode_audio(out)
+
+    def test_pieces_join_at_their_output_time_without_clicks(self) -> None:
+        audio = self.mix(song_edl({"source": "steps.wav", "pieces": [{"src_in": 0.5, "src_out": 1.5},
+                                                                      {"src_in": 4.5, "src_out": 5.5}]}, 2.0), "splice")
+        self.assertEqual(len(audio), 2 * SR)
+        first, second = tone(audio, 440, 0.1, 0.9), tone(audio, 880, 1.1, 1.9)
+        self.assertGreater(first, 0.05)
+        self.assertAlmostEqual(second / first, 1.0, delta=0.02)
+        self.assertLess(tone(audio, 660, 0.0, 2.0), 0.002)  # the verse in between is cut out
+        self.assertGreater(tone(audio, 440, 0.98, 0.997), 5 * tone(audio, 880, 0.98, 0.997))
+        self.assertGreater(tone(audio, 880, 1.003, 1.02), 5 * tone(audio, 440, 1.003, 1.02))
+        # The two sines meet out of phase; the 5 ms crossfade keeps every step a sine's own size.
+        steps = np.abs(np.diff(audio[round(0.99 * SR):round(1.01 * SR)]))
+        self.assertLess(float(steps.max()), 1.2 * 2 * np.pi * 880 / SR * second)
+
+    def test_gain_and_filter_keys_and_muffle_under_a_layer(self) -> None:
+        audio = self.mix(SHAPED_EDL, "shaped")
+        high, low = tone(audio, 5000, 0.1, 0.9), tone(audio, 200, 0.1, 0.9)
+        self.assertGreater(high, 0.02)
+        self.assertAlmostEqual(tone(audio, 200, 0.1, 0.9) / low, 1.0)
+
+        def ratio(freq: float, start: float, end: float) -> float:
+            return tone(audio, freq, start, end) / (high if freq == 5000 else low)
+
+        self.assertLess(ratio(5000, 1.1, 1.9), 0.01)  # muffled
+        self.assertAlmostEqual(ratio(200, 1.1, 1.9), 1.0, delta=0.03)  # with the bass intact
+        self.assertAlmostEqual(ratio(5000, 2.1, 2.9), 1.0, delta=0.03)  # open again
+        self.assertAlmostEqual(ratio(5000, 3.1, 3.9), 10 ** (-12 / 20), delta=0.01)
+        self.assertAlmostEqual(ratio(200, 3.1, 3.9), 10 ** (-12 / 20), delta=0.01)
+        self.assertLess(ratio(200, 4.1, 4.9), 0.01)  # thinned
+        self.assertAlmostEqual(ratio(5000, 4.1, 4.9), 1.0, delta=0.03)
+        self.assertLess(ratio(5000, 5.27, 5.53), 0.01)  # muffled under the sound effect
+        self.assertAlmostEqual(ratio(200, 5.27, 5.53), 1.0, delta=0.03)
+        self.assertGreater(tone(audio, 3000, 5.27, 5.53), 0.05)  # which is itself not muffled
+        self.assertLess(tone(audio, 3000, 4.8, 5.2), 0.002)
+        self.assertAlmostEqual(ratio(5000, 5.7, 6.9), 1.0, delta=0.03)
+        table = (self.root / "shaped" / "edl_table.md").read_text()
+        self.assertIn("| 2 | 1.000 | hold |  | 500 Hz |  |", table)
+        self.assertIn("| 5.250–5.550 | beep.wav (track 0) | 0.000–0.300 | +0 dB | 0 dB, muffled to 500 Hz | an impact |", table)
+
+    def test_filter_slope_sets_how_steeply_the_low_pass_cuts(self) -> None:
+        song = {"source": "chord.wav", "src_in": 0.0, "src_out": 1.0, "keyframes": [{"t": 0.0, "lowpass": 500}]}
+        for slope in (12, 48):
+            audio = self.mix(song_edl({**song, "filter_slope": slope}, 1.0), f"slope{slope}")
+            # A Butterworth low-pass of order n passes 1 / sqrt(1 + (f / fc) ** 2n) at f.
+            expected = 1 / math.sqrt(1 + (5000 / 500) ** (slope // 3))
+            self.assertAlmostEqual(tone(audio, 5000, 0.2, 0.9) / tone(audio, 200, 0.2, 0.9), expected,
+                                   delta=0.3 * expected + 1e-4)
+
+    def test_echo_tail_repeats_the_end_after_the_song_stops(self) -> None:
+        audio = self.mix(song_edl({"source": "tone.wav", "src_in": 0.0, "src_out": 1.0,
+                                   "tail": {"seconds": 1.0, "input": 0.1, "delay": 0.25, "feedback": 0.5}}, 2.0), "echo")
+        self.assertEqual(len(audio), 2 * SR)
+        dry = tone(audio, 1000, 0.2, 0.8)
+        self.assertGreater(dry, 0.05)
+        self.assertLess(tone(audio, 1000, 1.01, 1.14), 0.002)  # the song has stopped
+        self.assertAlmostEqual(tone(audio, 1000, 1.16, 1.24) / dry, 1.0, delta=0.03)  # first repeat at wet_db 0
+        self.assertLess(tone(audio, 1000, 1.26, 1.39), 0.002)
+        self.assertAlmostEqual(tone(audio, 1000, 1.41, 1.49) / dry, 0.5, delta=0.02)
+        self.assertAlmostEqual(tone(audio, 1000, 1.66, 1.74) / dry, 0.25, delta=0.02)
+        self.assertLess(float(np.abs(audio[-SR // 100:]).max()), 0.002)  # faded to silence
+
+    def test_reverb_tail_decays(self) -> None:
+        audio = self.mix(song_edl({"source": "tone.wav", "src_in": 0.0, "src_out": 1.0,
+                                   "tail": {"type": "reverb", "seconds": 1.0, "decay": 1.5, "wet_db": -6}}, 2.0),
+                         "reverb")
+
+        def rms(start: float, end: float) -> float:
+            return float(np.sqrt(np.mean(audio[round(start * SR):round(end * SR)] ** 2)))
+
+        levels = [rms(1.05, 1.15), rms(1.3, 1.4), rms(1.55, 1.65)]
+        self.assertGreater(levels[0], 0.1 * rms(0.2, 0.8))
+        self.assertGreater(levels[0], levels[1])
+        self.assertGreater(levels[1], levels[2])
+        self.assertGreater(levels[2], 0.0005)
+        self.assertTrue((self.root / "reverb" / "render_cache" / "reverb.wav").exists())
+
+    def test_mp4_carries_the_same_mix(self) -> None:
+        edl = copy.deepcopy(SHAPED_EDL)
+        edl["song"]["tail"] = {"seconds": 0.5, "type": "reverb", "decay": 0.5}
+        edl["clips"][0]["timeline_out"] = 7.5
+        wav = self.mix(edl, "both")
+        render.render(write_edl(self.root, "both.json", edl), self.root / "both" / "edit.mp4")
+        mp4 = decode_audio(self.root / "both" / "edit.mp4")
+        self.assertEqual(len(mp4), len(wav))
+        for start in np.arange(0.1, 7.3, 0.4):
+            for freq in (200, 5000):
+                a, b = tone(wav, freq, start, start + 0.2), tone(mp4, freq, start, start + 0.2)
+                self.assertLess(abs(a - b), 0.05 * max(a, b) + 2e-4, f"{freq} Hz at {start:.1f} s")
+
+    def test_sound_effect_plays_its_whole_file_and_must_fit(self) -> None:
+        edl = song_edl({"source": "tone.wav", "src_in": 0.0, "src_out": 1.0}, 1.0,
+                       [{"source": "beep.wav", "timeline_in": 0.5, "gain_db": -6, "fade_in": 0, "fade_out": 0}])
+        audio = self.mix(edl, "sfx")
+        self.assertLess(tone(audio, 3000, 0.3, 0.48), 0.002)
+        self.assertAlmostEqual(tone(audio, 3000, 0.52, 0.78) / tone(audio, 1000, 0.1, 0.4), 0.5, delta=0.02)
+        self.assertLess(tone(audio, 3000, 0.82, 1.0), 0.002)
+        edl["audio"][0]["timeline_in"] = 0.875
+        with self.assertRaises(EdlError) as ctx:
+            render.render(write_edl(self.root, "late.json", edl), None)
+        self.assertEqual(ctx.exception.problems, [
+            "audio[0]: ends at 1.175 s, after the output ends at 1.000 s; to cut it there, set src_out to 0.1250"])
+
+    def test_sources_cover_the_crossfade_handles(self) -> None:
+        edl = song_edl({"source": "tone.wav", "pieces": [{"src_in": 0.0, "src_out": 3.0},
+                                                         {"src_in": 0.0, "src_out": 1.0, "crossfade": 0.1}]}, 4.0)
+        with self.assertRaises(EdlError) as ctx:
+            render.render(write_edl(self.root, "handles.json", edl), None)
+        self.assertIn("song.pieces[1].src_in: the 0.100 s crossfade into this piece plays the source from -0.050 s; "
+                      "start the piece later or shorten the crossfade", ctx.exception.problems)
+        edl["song"]["pieces"][1]["src_in"] = 0.05
+        edl["song"]["pieces"][1]["src_out"] = 1.05
+        with self.assertRaises(EdlError) as ctx:
+            render.render(write_edl(self.root, "handles.json", edl), None)
+        self.assertEqual(ctx.exception.problems, ["song.pieces[0].src_out: 3.050 s is past the end of tone.wav (3.000 s) "
+                                                  "(with the 0.1 s crossfade out of it)"])
+
+
+class SongCurveTests(unittest.TestCase):
+    def test_cutoffs_sweep_in_octaves_and_muffles_take_the_lowest(self) -> None:
+        edl = parse_edl(song_edl({"source": "chord.wav", "src_in": 0.0, "src_out": 4.0, "keyframes": [
+            {"t": 0.0, "lowpass": 20000}, {"t": 1.0, "lowpass": 500}]}, 4.0,
+            [{"source": "beep.wav", "src_out": 0.3, "timeline_in": 2.0, "muffle_hz": 1000}]))
+        self.assertAlmostEqual(edl_module.song_lowpass(edl, 0.5), math.sqrt(20000 * 500), places=6)
+        self.assertAlmostEqual(edl_module.song_lowpass(edl, 1.5), 500)
+        self.assertAlmostEqual(edl_module.song_lowpass(edl, 2.1), 500)  # the keyframes are lower than the muffle
+        self.assertAlmostEqual(edl_module.song_highpass(edl.song, 1.0), 20)
+
+    def test_commands_follow_the_curve_and_skip_holds(self) -> None:
+        edl = copy.deepcopy(SHAPED_EDL)
+        edl["audio"][0]["src_out"] = 0.3  # render.resolve_layers fills this in from the file
+        text = render.song_command_text(parse_edl(edl))
+        assert text is not None
+        lines = text.splitlines()
+        times = [float(line.split()[0]) for line in lines]
+        self.assertEqual(times, sorted(times))
+        at_one = [line for line in lines if abs(float(line.split()[0]) - 1.0) < 0.006]
+        self.assertTrue(any("lowpass@song_lowpass0 frequency 500.000, lowpass@song_lowpass0 mix 1" in line
+                            for line in at_one), at_one)
+        # Each hold sends one command and steady stretches none; only the muffle's ramps move block by block.
+        # A value changes at the start of the BLOCK nearest its time.
+        held = [t for t in times if not 5.1 < t < 5.7]
+        self.assertEqual(len(held), 5)
+        for t, expected in zip(held, [1.0, 2.0, 3.0, 4.0, 5.0]):
+            self.assertLessEqual(abs(t - expected), render.BLOCK / 2 / SR + 1e-6)
+        block = render.BLOCK / SR
+        ramps = [t for t in times if 5.1 < t < 5.7]
+        self.assertTrue(all(5.17 - block < t < 5.25 + block or 5.55 - block < t < 5.63 + block for t in ramps), ramps)
+        self.assertIsNone(render.song_command_text(parse_edl(EDL)))
+        with tempfile.TemporaryDirectory() as tmp:
+            awkward = Path(tmp) / "a b, c:d's [x].txt"
+            awkward.write_text("0.5 volume@song_gain volume 0.5;\n")
+            out = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=d=1:sample_rate=48000",
+                                  "-af", ",".join(["asetnsamples=n=256:p=0", f"asendcmd=f={render.filter_arg(str(awkward))}",
+                                                   "volume@song_gain=volume=1:eval=once"]),
+                                  "-f", "f32le", "-"], capture_output=True)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            samples = np.frombuffer(out.stdout, np.float32)
+            self.assertAlmostEqual(float(np.abs(samples[SR // 2 + 256:]).max()) / float(np.abs(samples[:SR // 2]).max()),
+                                   0.5, delta=0.01)
+
+
 class EdlValidationTests(unittest.TestCase):
     def problems(self, edl: dict[str, object]) -> list[str]:
         with self.assertRaises(EdlError) as ctx:
@@ -529,6 +745,36 @@ class EdlValidationTests(unittest.TestCase):
         edl = copy.deepcopy(EDL)
         edl["audio"][0]["stem"] = "music"
         self.assertIn('audio[0].stem: must be one of mix, voice, got "music"', self.problems(edl))
+
+    def test_song_shaping_rules(self) -> None:
+        edl = copy.deepcopy(EDL)
+        edl["song"]["pieces"] = [{"src_in": 0.5, "src_out": 2.5, "crossfade": 0.01}, {"src_in": 3.0, "src_out": 5.0}]
+        self.assertIn("song: give src_in and src_out, or pieces, not both", self.problems(edl))
+        del edl["song"]["src_in"], edl["song"]["src_out"]
+        self.assertEqual(self.problems(edl), ["song.pieces[0].crossfade: the first piece has no join before it"])
+        del edl["song"]["pieces"][0]["crossfade"]
+        self.assertEqual(parse_edl(edl).song.pieces[1].crossfade, None)
+        edl["song"]["keyframes"] = [{"t": 0.5}, {"t": 0.4, "lowpass": 10}, {"t": 6.0, "gain_db": -3}]
+        edl["song"]["tail"] = {"seconds": 1.0, "decay": 2.0, "input": 9}
+        edl["audio"][0]["muffle_hz"] = 30000
+        edl["song"]["filter_slope"] = 18
+        problems = self.problems(edl)
+        self.assertIn("song.filter_slope: must be one of 12, 24, 36, 48, got 18", problems)
+        self.assertIn("song.keyframes[0]: sets none of gain_db, lowpass, highpass", problems)
+        self.assertIn("song.keyframes[1].t: must be after the previous keyframe, got 0.4", problems)
+        self.assertIn("song.keyframes[1].lowpass: must be from 20 to 20000, got 10", problems)
+        self.assertIn("song.keyframes: the last keyframe (6.000 s) is past the 5.000 s output", problems)
+        self.assertIn("song.tail.decay: is for type reverb; an echo fades by feedback", problems)
+        self.assertIn("song.tail.input: must be above 0 and at most the song's 4.000 s, got 9", problems)
+        self.assertIn("audio[0].muffle_hz: must be from 20 to 20000, got 30000", problems)
+
+    def test_tail_lengthens_the_output(self) -> None:
+        edl = copy.deepcopy(EDL)
+        edl["song"]["tail"] = {"seconds": 0.5, "type": "reverb"}
+        parsed = parse_edl(edl)
+        self.assertEqual(edl_module.output_frames(parsed), 90)
+        edl["song"]["tail"]["feedback"] = 0.3
+        self.assertIn("song.tail: delay and feedback are for type echo; a reverb fades by decay", self.problems(edl))
 
     def test_unknown_field_suggests_fix(self) -> None:
         edl = copy.deepcopy(EDL)
