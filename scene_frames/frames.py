@@ -55,7 +55,7 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 import analyze_edit
-from edl import Clip, Crop, Edl, EdlError, Output, clip_frames, load_edl, source_offset
+from edl import Clip, Crop, Edl, EdlError, Output, clip_frames, load_edl, song_pieces, source_offset
 import render
 
 Kind = Literal["shot", "flash", "black"]
@@ -792,9 +792,21 @@ class SongMap:
     drops: list[float]
 
 
-def _song_time(edl: Edl, t: float) -> float:
-    """Song-file seconds to edit timeline seconds."""
-    return (t - edl.song.src_in) / edl.song.speed
+def _song_time(edl: Edl, t: float) -> float | None:
+    """Song-file seconds to edit timeline seconds. Moments before the first piece or after the last map to
+    negative or past-the-end times, so a lyric line already under way at the start still shows; moments in a
+    stretch the splices cut out are None."""
+    pieces = song_pieces(edl.song)
+    speed = edl.song.speed
+    if t < pieces[0].src_in:
+        return (t - pieces[0].src_in) / speed
+    start = 0.0
+    for piece in pieces:
+        if t <= piece.src_out:
+            return start + (t - piece.src_in) / speed if t >= piece.src_in else None
+        start += (piece.src_out - piece.src_in) / speed
+    last = pieces[-1]
+    return start + (t - last.src_out) / speed
 
 
 def load_song_map(file: Path, edl: Edl, edl_dir: Path) -> SongMap | None:
@@ -812,11 +824,15 @@ def load_song_map(file: Path, edl: Edl, edl_dir: Path) -> SongMap | None:
         else:
             return None
 
-        def to_tl(t: float) -> float:
+        def to_tl(t: float) -> float | None:
             return _song_time(edl, t) if of_song else t
-        return SongMap(file, of_song, [to_tl(float(b)) for b in audio["beats"]],
-                       [(to_tl(float(w["start"])), to_tl(float(w["end"]))) for w in data.get("words", [])],
-                       [to_tl(float(d["time"])) for d in audio.get("drops", [])])
+
+        def played(times: Sequence[float]) -> list[float]:
+            return [tl for tl in map(to_tl, times) if tl is not None]
+        words = [(start, end) for w in data.get("words", [])
+                 if (start := to_tl(float(w["start"]))) is not None and (end := to_tl(float(w["end"]))) is not None]
+        return SongMap(file, of_song, played([float(b) for b in audio["beats"]]), words,
+                       played([float(d["time"]) for d in audio.get("drops", [])]))
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
@@ -845,7 +861,8 @@ def load_lyrics(file: Path, edl: Edl) -> list[tuple[float, str]]:
         stamps = LRC_LINE.findall(raw)
         words = re.sub(r"<\d+:\d+(?:\.\d+)?>", "", LRC_LINE.sub("", raw)).strip()
         for minutes, seconds in stamps:
-            lines.append((_song_time(edl, int(minutes) * 60 + float(seconds)), words))
+            if (at := _song_time(edl, int(minutes) * 60 + float(seconds))) is not None:
+                lines.append((at, words))
     return sorted(lines)
 
 
@@ -1058,9 +1075,10 @@ def cut_notes(edl: Edl, n: int, song_map: SongMap | None, lyrics: Sequence[tuple
             parts.append(f"next lyric {t - at:+.2f} s: {text}")
     for k, layer in enumerate(edl.audio):
         start = layer.timeline_in
-        if start - CUT_REACH <= at <= start + (layer.src_out - layer.src_in) + CUT_REACH:
-            parts.append(f"audio layer {k + 1} {start:.2f}–{start + layer.src_out - layer.src_in:.2f} s"
-                         + (f": {layer.why}" if layer.why else ""))
+        end = None if layer.src_out is None else start + layer.src_out - layer.src_in  # None: to the file's end
+        if start - CUT_REACH <= at and (end is None or at <= end + CUT_REACH):
+            span = f"{start:.2f}–{end:.2f} s" if end is not None else f"from {start:.2f} s"
+            parts.append(f"audio layer {k + 1} {span}" + (f": {layer.why}" if layer.why else ""))
     if clip.why:
         parts.append(f"why: {clip.why}")
     return " · ".join(parts) if parts else "no song map, lyrics or notes for this cut"

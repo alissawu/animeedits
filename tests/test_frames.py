@@ -257,6 +257,19 @@ class FramesTest(unittest.TestCase):
         self.assertIn("word starts +0.10 s", notes)
         self.assertIn("next lyric +0.10 s: second line", notes)
 
+    def test_song_times_follow_spliced_pieces(self) -> None:
+        file = self.write_edl()
+        data = json.loads(file.read_text())
+        data["song"] = {"source": "song.wav", "pieces": [{"src_in": 2.0, "src_out": 3.0},
+                                                         {"src_in": 5.0, "src_out": 6.0}]}
+        file.write_text(json.dumps(data))
+        edl = fr.load_edl(file)
+        self.assertAlmostEqual(fr._song_time(edl, 1.5), -0.5)   # before the first piece
+        self.assertAlmostEqual(fr._song_time(edl, 2.5), 0.5)
+        self.assertIsNone(fr._song_time(edl, 4.0))              # cut out between the pieces
+        self.assertAlmostEqual(fr._song_time(edl, 5.5), 1.5)
+        self.assertAlmostEqual(fr._song_time(edl, 6.5), 2.5)    # after the last piece
+
     def test_cut_pairs_sheet_and_cut_numbers(self) -> None:
         file = self.write_edl()
         out = self.root / "pairs.jpg"
