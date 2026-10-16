@@ -1,0 +1,5 @@
+# Optional. Tested alignment runtime, Python 3.11/3.12. Install alongside requirements.txt.
+# Torch/torchaudio MUST be a matching release pair; do not upgrade just one.
+torch==2.5.1
+torchaudio==2.5.1
+shazamio>=0.8,<0.9

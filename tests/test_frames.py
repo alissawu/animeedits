@@ -229,6 +229,31 @@ class FramesTest(unittest.TestCase):
         (self.root / "song.lrc").write_text("[00:01.00] first line\n[00:03.10] <00:03.10>second <00:03.30>line\n")
         return file
 
+    def test_reference_alignment_overlay_keeps_source_and_scores_separate(self) -> None:
+        file = self.write_edl()
+        edl = fr.load_edl(file)
+        base = fr.find_song_map(edl, self.root)
+        assert base is not None
+        data = {"media": str(self.root / "song.wav"), "duration": 4,
+                "reference": {"lines": [{"text": "second line"}]},
+                "words": [{"text": "second", "start": 3.1, "end": 3.3, "ctc_score": .1,
+                           "reference_index": 0, "line_index": 0, "low_score": True},
+                          {"text": "line", "start": 3.3, "end": 3.4, "ctc_score": .2,
+                           "reference_index": 1, "line_index": 0, "low_score": True}]}
+        aligned_file = self.root / "alignment.json"
+        aligned_file.write_text(json.dumps(data))
+        mapped = fr.with_alignment(base, aligned_file, edl, self.root)
+        self.assertEqual([w.text for w in mapped.words], ["second", "line"])
+        self.assertAlmostEqual(mapped.words[0].start, 1.1)
+        self.assertEqual(mapped.beats, base.beats)
+        self.assertNotEqual(mapped.word_source, base.word_source)
+        self.assertEqual(len(base.words), 1)  # raw map untouched
+        self.assertIn("CTC=", fr.cut_notes(edl, 2, mapped, []))
+        data["media"] = str(self.root / "different.wav")
+        aligned_file.write_text(json.dumps(data))
+        with self.assertRaisesRegex(fr.FramesError, "song file"):
+            fr.with_alignment(base, aligned_file, edl, self.root)
+
     def test_cut_pair_frames_match_the_render(self) -> None:
         file = self.write_edl()
         edl = fr.load_edl(file)

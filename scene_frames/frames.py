@@ -42,7 +42,7 @@ With --edl it crops the edit's 16:9 output, as a vertical cut of the same edit w
 """
 import argparse
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -794,6 +794,7 @@ class SongMap:
     words: list[analyze_edit.Word]
     drops: list[float]
     lyrics: lyric_reference.Reference | None = None
+    word_source: str = "recognized"
 
 
 def _song_time(edl: Edl, t: float) -> float | None:
@@ -843,6 +844,28 @@ def load_song_map(file: Path, edl: Edl, edl_dir: Path) -> SongMap | None:
                        played([float(d["time"]) for d in audio.get("drops", [])]), reference)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
+
+
+
+def with_alignment(song_map: SongMap | None, file: Path, edl: Edl, edl_dir: Path) -> SongMap:
+    """Explicitly overlay reference-conditioned words; never rewrite raw Whisper caches."""
+    import lyricsync
+    try:
+        data = json.loads(file.read_text())
+        if Path(data["media"]).resolve() != render.resolve(edl_dir, edl.song.source):
+            raise ValueError("alignment must be of this EDL's song file, not a different mix/render")
+        aligned = [lyricsync.Word(**w) for w in data["words"]]
+        lines = [str(line["text"]) for line in data["reference"]["lines"]]
+        lyricsync.validate(lines, aligned, float(data["duration"]))
+        words = [analyze_edit.Word(start, end, w.ctc_score, w.text) for w in aligned
+                 if (start := _song_time(edl, w.start)) is not None
+                 and (end := _song_time(edl, w.end)) is not None and end > start]
+        base = song_map if song_map is not None else SongMap(file, True, [], [], [])
+        if not base.of_song:
+            raise ValueError("use a song map, not a render map, with --alignment")
+        return replace(base, words=words, word_source="aligned reference")
+    except (OSError, KeyError, TypeError, ValueError) as e:
+        raise FramesError(f"cannot use alignment {file}: {e}") from None
 
 
 def find_song_map(edl: Edl, edl_dir: Path) -> SongMap | None:
@@ -934,7 +957,8 @@ def _rel(values: Sequence[float], at: float) -> list[float]:
 
 
 def cut_pairs(edl_path: Path, out: Path, cut_spec: str | None, song_map_file: Path | None, lyrics_file: Path | None,
-              crop_x: float | None, *, show_intent: bool = False, lyrics_source: str | None = None) -> str:
+              crop_x: float | None, *, show_intent: bool = False, lyrics_source: str | None = None,
+              alignment_file: Path | None = None) -> str:
     try:
         edl = load_edl(edl_path)
     except EdlError as e:
@@ -955,6 +979,8 @@ def cut_pairs(edl_path: Path, out: Path, cut_spec: str | None, song_map_file: Pa
             raise FramesError(f"{song_map_file} is not an analyze_edit.py map of this EDL's song or of its render")
     else:
         song_map = find_song_map(edl, edl_dir)
+    if alignment_file is not None:
+        song_map = with_alignment(song_map, alignment_file, edl, edl_dir)
     reference = song_map.lyrics if song_map is not None else None
     if lyrics_file is not None:
         try:
@@ -979,7 +1005,9 @@ def cut_pairs(edl_path: Path, out: Path, cut_spec: str | None, song_map_file: Pa
                 f"beats as ticks, sung words as bars. {source}.", size=13, fill=DIM)
     canvas.text("Intention notes shown." if show_intent else "Intention notes hidden; use --show-intent to compare afterward.",
                 size=13, fill=DIM)
-    canvas.text("Cue proximity describes timing, not editing quality. Recognized words are unverified Whisper text; "
+    canvas.text("Aligned reference words use uncalibrated CTC scores, not recognition confidence. Timing needs review."
+                if song_map is not None and song_map.word_source == "aligned reference" else
+                "Cue proximity describes timing, not editing quality. Recognized words are unverified Whisper text; "
                 "p is recognition confidence, not timing accuracy. Legacy maps may have no text.", size=13, fill=DIM)
     if reference is not None:
         canvas.text(f"Published lyric reference: {reference.source}. {reference.alignment}. "
@@ -1113,7 +1141,8 @@ def cut_notes(edl: Edl, n: int, song_map: SongMap | None, lyrics: Sequence[tuple
         for w in song_map.words:
             if w.end >= at - CUT_REACH and w.start <= at + CUT_REACH:
                 text = json.dumps(w.text, ensure_ascii=False) if w.text is not None else "[text unknown]"
-                parts.append(f"recognized {text} {w.start-at:+.2f}–{w.end-at:+.2f} s (p={w.probability:.2f})")
+                label = "CTC" if song_map.word_source == "aligned reference" else "p"
+                parts.append(f"{song_map.word_source} {text} {w.start-at:+.2f}–{w.end-at:+.2f} s ({label}={w.probability:.2f})")
     sung = [line for line in lyrics if line[0] <= at]
     if sung and sung[-1][1]:
         parts.append(f"reference lyric at the cut (began {sung[-1][0] - at:+.2f} s): {sung[-1][1]}")
@@ -1159,6 +1188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--edl", type=Path, help="cut pairs of this EDL")
     ap.add_argument("--cut", help="cut pairs: N, A-B or a comma list; cut N is where clip #N enters (default: all)")
     ap.add_argument("--song-map", type=Path, help="cut pairs: analyze_edit.py timeline.json of the song or the render")
+    ap.add_argument("--alignment", type=Path, help="cut pairs: lyricsync alignment.json of the song")
     ap.add_argument("--lyrics", type=Path, help="cut pairs: an LRC file of the song")
     ap.add_argument("--lyrics-source", help="attribution for --lyrics (defaults to its local path)")
     ap.add_argument("--show-intent", action="store_true", help="cut pairs: show why notes and declared sync cues")
@@ -1173,11 +1203,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if len(a.args) != 1 or a.dense:
                 ap.error("--edl takes one positional argument, OUT.jpg, and no --dense")
             print(cut_pairs(a.edl, Path(a.args[0]), a.cut, a.song_map, a.lyrics, a.crop_x,
-                            show_intent=a.show_intent, lyrics_source=a.lyrics_source))
+                            show_intent=a.show_intent, lyrics_source=a.lyrics_source, alignment_file=a.alignment))
             return 0
         if len(a.args) != 4:
             ap.error("expected SOURCE IN OUT OUT.jpg")
-        if a.cut or a.song_map or a.lyrics or a.show_intent:
+        if a.cut or a.song_map or a.lyrics or a.show_intent or a.alignment:
             ap.error("--cut, --song-map, --lyrics and --show-intent go with --edl")
         source, out = Path(a.args[0]), Path(a.args[3])
         try:
