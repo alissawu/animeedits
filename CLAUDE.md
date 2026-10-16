@@ -21,7 +21,7 @@ One thing is not up to you: **watch your render before presenting it.** Look at 
 
 Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (the stretch of song and what it feels like, what the edit is about, the moments it hinges on, what the viewer goes through) and wait for a pick. Otherwise choose the strongest and build it.
 
-Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. The show's cast notes and episode synopses are already in `shows/<show>/`; your research is what's specific to this edit, in `out/<edit-name>/`.
+Research the show and the song as deeply as the edit needs. You know enough when you could explain, the way a fan would, why this song fits the character or characters, with the moments that show it. Keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. The show's cast notes and episode synopses are already in `shows/<show>/`; your research is what's specific to this edit, in `out/<edit-name>/`.
 
 Good places to look. These are starting points, not a checklist:
 - **Canon:**

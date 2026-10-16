@@ -59,7 +59,8 @@ are errors, so typos never pass silently.
             speed has carried the source by timeline_out; leave it out and it is derived
             (--check prints it, edl_table.md shows it). speed 0 freezes on src_in.
             sync and why are optional notes for critique: sync is what the cut lands on
-            (beat, drop, word, phrase_end, motion or free), why is free text. The renderer
+            (beat, drop, word, phrase_end, motion or free), why is free text about what the
+            shot does in the edit, e.g. "the last time we see her happy before the turn". The renderer
             does not interpret them; edl_table.md and proof.jpg show them.
             crop {zoom=1, x=0.5, y=0.5}: the largest window of the output's aspect ratio,
             divided by zoom (>= 1), centred on the source point (x, y) as fractions of
