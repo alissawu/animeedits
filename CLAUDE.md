@@ -19,7 +19,7 @@ Aim to make something emotionally evocative for the people who care about these 
 
 Bring that understanding together with what the song expresses to develop the edit's core thesis. Understand the lyrics, their delivery, and the emotional movement of the music. Use the connection between the song and the characters to shape the edit's perspective, progression, choice of song section, and footage.
 
-Don't commit to a thesis until every research subagent has returned: write it in `notes.md` first, and don't start the EDL before it's there. Song mapping, indexing and scouting footage can run while research is out. Have research subagents write findings to a file under `out/<edit-name>/research/` as they go, so you can read partial results instead of waiting blind. If research that changes the thesis arrives after you've built, rethink from the thesis rather than patching the finished cut.
+Research subagents report back once, when they finish, so wait for all of them before writing the thesis in `notes.md`, and don't start the EDL before it's there. Song mapping and indexing can run meanwhile, since they don't depend on the thesis.
 
 Develop this connection while researching and examining scenes. Consider what those moments mean in the original story and what they convey together in the edit. Let discoveries refine or change the idea. Treat lyrics as part of the song's meaning, rather than a list of things to illustrate.
 
@@ -31,20 +31,7 @@ Pitching is optional. If you want the user's steer, pitch 2–3 genuinely differ
 
 Episode summaries, cast notes and indexes support factual checking and footage navigation. The show's shared cast notes and episode synopses are in `shows/<show>/`.
 
-Good places to look. These are starting points, not a checklist:
-- **Canon:**
-  - The show's Fandom wiki. Its episode and chapter summaries are the most reliable facts.
-  - Creator and staff interviews, for intent.
-  - For anime, Japanese-language reviews and explainers often have details English sources lack.
-- **How fans feel:**
-  - Reddit episode-discussion threads. Reddit blocks scripts and the built-in web fetch; see the browser note below.
-  - MyAnimeList forum threads. These are readable and full of shot-level fan readings.
-  - Tumblr meta posts.
-  - AO3 relationship and freeform tags. A ship's most-used tags map its dynamics and recurring motifs. For the works themselves, sort by bookmarks or kudos and prefer fics centered on the ship, which usually list it as their first relationship tag. A ship's tag also lists long ensemble fics where it's a side pairing, and those top every popularity sort.
-- **The song:**
-  - Genius annotations.
-  - Artist interviews and album notes.
-  - Timestamped YouTube comments, which show where a song hits people.
+Brief research subagents with [docs/research.md](docs/research.md): it covers where to look, how to read sites that block fetches, and what to report. Before sending them, run `python tools/browser.py status`. `ready` means the first read makes Chrome ask the user to Allow the connection, so tell the user it's coming. `off` means ask the user to turn on `chrome://inspect/#remote-debugging` and wait for their answer; fall back to `--profile` (headless, no logins) only if they say no or there's no one to ask. List every source the research couldn't read in `notes.md` and when you present the edit.
 
 ## Tools
 
@@ -65,10 +52,6 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 Use the proof sheet, or `frames.py --edl`, and `analyze_edit.py` to investigate what you notice. Review sheets hide `why` notes and declared sync claims by default; `--show-intent` adds them for comparison afterward. Numerical proximity is descriptive, not a quality score. If you claim a particular sync, identify its target and inspect the relevant cut or action within the shot. Named `sync_points` can record that comparison.
 
 Listen to the finished mix when audio perception is available. If it isn't, distinguish the visual and measured checks you performed from an audiovisual review; do not claim to have heard or verified what you could not assess.
-
-### Research browser
-
-**When a page won't load:** use the built-in web search and fetch first. Only for pages they can't read (Reddit, logged-in or JavaScript-drawn pages), fall back to `python tools/browser.py text URL`. It reads through the user's own logged-in Chrome in background tabs, so their screen never moves. At the start of research, run `python tools/browser.py status`, which checks without prompting. `connected` means reads already work. `ready` means the first read makes Chrome ask the user to Allow the connection: as soon as you know the research needs one of those sites, tell the user, then make that read. Later reads in the session reuse it. `off`, or a read that exits 3, means Chrome isn't set up for it or the Allow wasn't clicked: ask the user to turn on `chrome://inspect/#remote-debugging` and wait for their answer. Fall back to `--profile`, a separate headless Chrome without the user's logins, only if they say no or there's no one to ask. Exit 2 means the site blocked the read: note it and move on. List every source you couldn't read in `notes.md` and when you present the edit, so the user knows what it was made without. Details are in [tools/README.md](tools/README.md).
 
 ### Tool notes
 
