@@ -7,11 +7,37 @@ are errors, so typos never pass silently.
 
   output    {width, height, fps}: even pixel sizes and a whole-number frame rate.
             9:16 output from 16:9 sources crops each clip (see clip.crop).
-  song      {source, src_in, src_out, speed=1, gain_db=0, fade_in=0, fade_out=0}
-            One continuous window of the song. Output length = (src_out - src_in) / speed;
-            the picture is cut to fit the audio, never the reverse. speed resamples like a
-            turntable, so sped-up audio is also pitched up. Fades are seconds of output.
-            The final mix goes through a peak limiter at -0.45 dBFS.
+  song      {source, src_in, src_out, pieces, speed=1, gain_db=0, fade_in=0, fade_out=0,
+              keyframes, filter_slope=24, tail}
+            The song: one continuous window (src_in, src_out), or pieces of it joined in
+            order. Output length = the song's length / speed, plus tail.seconds; the picture
+            is cut to fit the audio, never the reverse. speed resamples like a turntable, so
+            sped-up audio is also pitched up. Fades are seconds of output at the song's start
+            and end (before any tail). The final mix goes through a peak limiter at -0.45 dBFS.
+            pieces [{src_in, src_out, crossfade=0.005}], instead of src_in and src_out: source
+            windows played one after another, e.g. to cut out a verse. Each piece starts on the
+            output where the pieces before it end. crossfade is the output seconds over which
+            the join into a piece blends, so it is not given on the first piece. It is centred
+            on the join: each side plays crossfade / 2 past its edge, so the source needs that
+            much either side. The default, JOIN (5 ms), only keeps the join from clicking.
+            keyframes [{t, ease="linear", gain_db, lowpass, highpass}]: t is output seconds,
+            tail included, strictly increasing; eases and holds work as for clip keyframes.
+            gain_db adds to the song's gain, interpolated in dB (a dip before a drop, a spike
+            on it). lowpass and highpass are cutoffs in Hz, 20 to 20000, of Butterworth
+            filters, interpolated in octaves: lowpass 400 muffles the song, 20000 is fully
+            open; highpass 20 is open, 300 thins it. Before its first key a property has that
+            key's value; with no keys the gain is 0 dB and both filters are open.
+            filter_slope (12, 24, 36 or 48 dB/octave) sets how steeply both filters, and the
+            layers' muffles, cut past their cutoff: 12 dulls gently, 48 is a wall.
+            tail {seconds, type="echo", input=0.5, wet_db=0, delay=0.25, feedback=0.5, decay=2}:
+            the song rings out for `seconds` after it ends instead of stopping. The song's
+            last `input` seconds feed the effect and the song itself stops at its end (with a
+            JOIN-long fade). echo repeats them every `delay` seconds, each repeat `feedback`
+            times the one before (delay and feedback are for echo only); reverb sends them
+            through a room whose sound takes `decay` seconds to fall 60 dB (decay is for
+            reverb only). wet_db is the level of the first repeat, or of the reverb, against
+            the song. Repeats that fall inside the song overlap it. The last quarter of the
+            tail fades to silence. Keyframes, ducks and muffles apply to the tail too.
   clips     [{source, src_in, timeline_in, timeline_out, src_out, sync, why, speed=1,
               reverse=false, slowmo="repeat", crop, keyframes, shake_hz=12, color,
               transition}], in timeline order, never overlapping. Time not covered by a
@@ -49,16 +75,21 @@ are errors, so typos never pass silently.
               crossfade: the clip fades in over its first `frames` frames. If the
                 previous clip ends exactly here it keeps playing past its src_out
                 underneath (a handle), otherwise the clip fades in from black.
-  audio     [{source, src_in, src_out, timeline_in, track=0, stem="mix", gain_db=0,
-              duck_db=0, fade_in=0.01, fade_out=0.01, why}]: extra layers, e.g. film dialogue.
-            track is the source's audio stream number. stem "mix" plays that track as it
-            is; "voice" keeps only the voices (lines, breaths, screams) and drops the
-            score and sound effects under them, so a line can sit on the song without the
-            show's music. The voice is separated by a model (separate.py) from the span
-            plus a second of context either side, takes about real time on Apple silicon
-            and is cached in render_cache/. duck_db (<= 0) lowers the song
-            while the layer plays, ramping over DUCK_RAMP (0.08) seconds on either side.
-            Overlapping layers do not stack their ducks; the deepest one applies.
+  audio     [{source, timeline_in, src_in=0, src_out, track=0, stem="mix", gain_db=0,
+              duck_db=0, muffle_hz, fade_in=0.01, fade_out=0.01, why}]: extra layers, e.g.
+            film dialogue or a sound effect. source is any video or audio file; src_out
+            defaults to the end of the file. track is the source's audio stream number.
+            stem "mix" plays that track as it is; "voice" keeps only the voices (lines,
+            breaths, screams) and drops the score and sound effects under them, so a line can
+            sit on the song without the show's music. The voice is separated by a model
+            (separate.py) from the span plus a second of context either side, takes about real
+            time on Apple silicon and is cached in render_cache/. duck_db (<= 0) lowers the
+            song while the layer plays, ramping over DUCK_RAMP (0.08) seconds on either side.
+            muffle_hz low-passes the song at that cutoff (20 to 20000 Hz, at song.filter_slope)
+            while the layer plays, ramping in octaves over the same DUCK_RAMP, so the music
+            sits under a line with its bass intact. Overlapping layers do not stack their
+            ducks or muffles; the deepest duck and the lowest cutoff apply, the song's lowpass
+            keyframes included.
   overlays  [{source, timeline_in, timeline_out, src_in=0, opacity=1, x=0.5, y=0.5,
               width=1, why}]: an image or video composited over the picture. (x, y) is
             its centre as fractions of the output; width is a fraction of output width.
@@ -76,7 +107,7 @@ are errors, so typos never pass silently.
             fades to black; the last frame is black.
   title, notes: optional free text.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import dataclasses
 from dataclasses import dataclass, field
 import difflib
@@ -91,9 +122,16 @@ Sync = Literal["beat", "drop", "word", "phrase_end", "motion", "free"]
 Ease = Literal["linear", "in", "out", "in_out", "hold"]
 SlowMo = Literal["repeat", "blend", "motion"]
 AudioStem = Literal["mix", "voice"]
+TailType = Literal["echo", "reverb"]
 
 ANIMATED = ("speed", "zoom", "x", "y", "shake")
+SONG_ANIMATED = ("gain_db", "lowpass", "highpass")
 DUCK_RAMP = 0.08
+JOIN = 0.005  # seconds of crossfade at a splice, and of fade where the song stops before a tail
+OPEN_LOWPASS, OPEN_HIGHPASS = 20000.0, 20.0  # cutoffs at which the song's filters are off
+ECHO_DELAY, ECHO_FEEDBACK, REVERB_DECAY = 0.25, 0.5, 2.0
+TAIL_FADE = 0.25  # the fraction of a tail, at its end, that fades to silence
+FILTER_SLOPES = (12, 24, 36, 48)  # dB per octave of the song's low- and high-pass filters
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 
@@ -105,26 +143,58 @@ class Output:
 
 
 @dataclass(frozen=True)
-class Song:
-    source: str
+class Piece:
     src_in: float
     src_out: float
+    crossfade: float | None = None  # JOIN when None
+
+
+@dataclass(frozen=True)
+class SongKey:
+    t: float
+    ease: Ease = "linear"
+    gain_db: float | None = None
+    lowpass: float | None = None
+    highpass: float | None = None
+
+
+@dataclass(frozen=True)
+class Tail:
+    seconds: float
+    type: TailType = "echo"
+    input: float = 0.5
+    wet_db: float = 0.0
+    delay: float | None = None  # echo only; ECHO_DELAY when None
+    feedback: float | None = None  # echo only; ECHO_FEEDBACK when None
+    decay: float | None = None  # reverb only; REVERB_DECAY when None
+
+
+@dataclass(frozen=True)
+class Song:
+    source: str
+    src_in: float | None = None
+    src_out: float | None = None
+    pieces: tuple[Piece, ...] = ()
     speed: float = 1.0
     gain_db: float = 0.0
     fade_in: float = 0.0
     fade_out: float = 0.0
+    keyframes: tuple[SongKey, ...] = ()
+    filter_slope: int = 24
+    tail: Tail | None = None
 
 
 @dataclass(frozen=True)
 class AudioLayer:
     source: str
-    src_in: float
-    src_out: float
     timeline_in: float
+    src_in: float = 0.0
+    src_out: float | None = None  # the end of the file when None; render.resolve_layers fills it in
     track: int = 0
     stem: AudioStem = "mix"
     gain_db: float = 0.0
     duck_db: float = 0.0
+    muffle_hz: float | None = None
     fade_in: float = 0.01
     fade_out: float = 0.01
     why: str | None = None
@@ -261,9 +331,59 @@ def to_frame(seconds: float, fps: int) -> int:
     return math.floor(seconds * fps + 0.5 + 1e-9)
 
 
+def song_pieces(song: Song) -> tuple[Piece, ...]:
+    """The source windows the song plays, in order: its pieces, or its one window."""
+    if song.pieces:
+        return song.pieces
+    if song.src_in is None or song.src_out is None:
+        raise ValueError("a song needs src_in and src_out, or pieces")
+    return (Piece(song.src_in, song.src_out),)
+
+
+def join_seconds(song: Song, index: int) -> float:
+    """Output seconds of the crossfade into piece `index`; 0 before the first piece and past the last."""
+    if index <= 0 or index >= len(song_pieces(song)):
+        return 0.0
+    crossfade = song_pieces(song)[index].crossfade
+    return JOIN if crossfade is None else crossfade
+
+
+def song_window(song: Song) -> float:
+    """Output seconds of the song itself, before any tail."""
+    if not song.pieces:
+        if song.src_in is None or song.src_out is None:
+            raise ValueError("a song needs src_in and src_out, or pieces")
+        return (song.src_out - song.src_in) / song.speed
+    return sum(piece.src_out - piece.src_in for piece in song.pieces) / song.speed
+
+
+def song_seconds(song: Song) -> float:
+    """Output seconds of the song and its tail."""
+    return song_window(song) if song.tail is None else song_window(song) + song.tail.seconds
+
+
 def output_frames(edl: Edl) -> int:
-    song = edl.song
-    return to_frame((song.src_out - song.src_in) / song.speed, edl.output.fps)
+    return to_frame(song_seconds(edl.song), edl.output.fps)
+
+
+def layer_end(layer: AudioLayer) -> float:
+    """src_out of a layer whose end is known (given, or filled in by render.resolve_layers)."""
+    if layer.src_out is None:
+        raise ValueError(f"the end of the audio layer from {layer.source} is not resolved")
+    return layer.src_out
+
+
+def layer_times(layer: AudioLayer, fps: int) -> tuple[float, float]:
+    """Output seconds where a layer starts (snapped to a frame) and ends."""
+    start = to_frame(layer.timeline_in, fps) / fps
+    return start, start + layer_end(layer) - layer.src_in
+
+
+def layer_weight(layer: AudioLayer, fps: int, t: float) -> float:
+    """How far a layer's duck or muffle applies at output time `t`: 1 while it plays, ramping over DUCK_RAMP."""
+    start, end = layer_times(layer, fps)
+    r = DUCK_RAMP
+    return min(1.0, max(0.0, min((t - (start - r)) / r, ((end + r) - t) / r)))
 
 
 def clip_frames(clip: Clip, fps: int) -> tuple[int, int]:
@@ -277,10 +397,10 @@ def clip_frames(clip: Clip, fps: int) -> tuple[int, int]:
     return to_frame(clip.timeline_in, fps), to_frame(end, fps)
 
 
-def track(clip: Clip, name: str) -> list[tuple[float, float, Ease]]:
+def track(keyed: Clip | Song, name: str) -> list[tuple[float, float, Ease]]:
     """(t, value, ease) of the keyframes that set property `name`."""
     points = []
-    for key in clip.keyframes:
+    for key in keyed.keyframes:
         value = getattr(key, name)
         if value is not None:
             points.append((key.t, float(value), key.ease))
@@ -316,6 +436,48 @@ def advance(clip: Clip, t: float) -> float:
         total += (b - a) * (va * u + (vb - va) * _EASE_INTEGRAL[ease](u))
     last_t, last_v, _ = points[-1]
     return total + last_v * max(0.0, t - last_t)
+
+
+_EASE: dict[str, Callable[[float], float]] = {
+    "linear": lambda u: u,
+    "in": lambda u: u * u,
+    "out": lambda u: 2 * u - u * u,
+    "in_out": lambda u: u * u * (3 - 2 * u),
+    "hold": lambda u: 0.0,
+}
+
+
+def interpolate(points: Sequence[tuple[float, float, str]], base: float, t: float) -> float:
+    """A keyframed value at time `t`: `base` with no keys, the first and last values outside them."""
+    if not points:
+        return base
+    if t < points[0][0]:
+        return points[0][1]
+    for (t0, v0, _), (t1, v1, ease) in zip(points, points[1:]):
+        if t < t1:
+            return v0 + (v1 - v0) * _EASE[ease]((t - t0) / (t1 - t0))
+    return points[-1][1]
+
+
+def song_gain_db(song: Song, t: float) -> float:
+    """dB the song's gain keyframes add at output time `t`."""
+    return interpolate(track(song, "gain_db"), 0.0, t)
+
+
+def song_highpass(song: Song, t: float) -> float:
+    """The song's high-pass cutoff in Hz at output time `t`, interpolated in octaves."""
+    octaves = [(k, math.log2(v), ease) for k, v, ease in track(song, "highpass")]
+    return 2 ** interpolate(octaves, math.log2(OPEN_HIGHPASS), t)
+
+
+def song_lowpass(edl: Edl, t: float) -> float:
+    """The song's low-pass cutoff in Hz at output time `t`: the lowest of its keyframes and the layers' muffles."""
+    fps, top = edl.output.fps, math.log2(OPEN_LOWPASS)
+    octaves = interpolate([(k, math.log2(v), ease) for k, v, ease in track(edl.song, "lowpass")], top, t)
+    for layer in edl.audio:
+        if layer.muffle_hz is not None:
+            octaves = min(octaves, top + layer_weight(layer, fps, t) * (math.log2(layer.muffle_hz) - top))
+    return 2 ** octaves
 
 
 def source_offset(clip: Clip, fps: int, frame: int) -> float:
@@ -493,16 +655,74 @@ def check(edl: Edl) -> list[str]:
     fps = out.fps
 
     song = edl.song
-    source_range(song.src_in, song.src_out, "song")
+    if song.pieces:
+        need(song.src_in is None and song.src_out is None, "song", "give src_in and src_out, or pieces, not both")
+        for k, piece in enumerate(song.pieces):
+            source_range(piece.src_in, piece.src_out, f"song.pieces[{k}]")
+            if piece.crossfade is None:
+                continue
+            if k == 0:
+                p.append("song.pieces[0].crossfade: the first piece has no join before it")
+            else:
+                within(piece.crossfade, 0, 4, f"song.pieces[{k}].crossfade")
+    elif song.src_in is None or song.src_out is None:
+        p.append("song: give src_in and src_out, or pieces")
+    else:
+        source_range(song.src_in, song.src_out, "song")
     within(song.speed, 0.25, 4, "song.speed")
     within(song.gain_db, -60, 24, "song.gain_db")
     if p:
         return p
+    need(song.filter_slope in FILTER_SLOPES, "song.filter_slope",
+         f"must be one of {', '.join(map(str, FILTER_SLOPES))}, got {song.filter_slope}")
     total = output_frames(edl)
     duration = total / fps
+    window = song_window(song)
     need(total >= 1, "song", "the window is shorter than one output frame")
-    need(song.fade_in >= 0 and song.fade_out >= 0 and song.fade_in + song.fade_out <= duration + 1e-9,
-         "song", f"fade_in and fade_out must be >= 0 and fit in the {_s(duration)} output")
+    fit = duration if song.tail is None else window
+    need(song.fade_in >= 0 and song.fade_out >= 0 and song.fade_in + song.fade_out <= fit + 1e-9,
+         "song", f"fade_in and fade_out must be >= 0 and fit in the {_s(fit)} " + ("output" if song.tail is None else "song"))
+    for k, piece in enumerate(song.pieces):
+        into, out_of = join_seconds(song, k), join_seconds(song, k + 1)
+        seconds = (piece.src_out - piece.src_in) / song.speed
+        need(into / 2 + out_of / 2 <= seconds + 1e-9, f"song.pieces[{k}]",
+             f"lasts {_s(seconds)}, less than half its crossfades either side ({_s(into / 2 + out_of / 2)})")
+        need(piece.src_in - into / 2 * song.speed >= -1e-9, f"song.pieces[{k}].src_in",
+             f"the {_s(into)} crossfade into this piece plays the source from "
+             f"{piece.src_in - into / 2 * song.speed:.3f} s; start the piece later or shorten the crossfade")
+    for k, song_key in enumerate(song.keyframes):
+        kp = f"song.keyframes[{k}]"
+        if k == 0:
+            need(song_key.t >= 0, f"{kp}.t", f"must be >= 0, got {song_key.t:g}")
+        else:
+            need(song_key.t > song.keyframes[k - 1].t, f"{kp}.t", f"must be after the previous keyframe, got {song_key.t:g}")
+        need(any(getattr(song_key, name) is not None for name in SONG_ANIMATED), kp,
+             f"sets none of {', '.join(SONG_ANIMATED)}")
+        if song_key.gain_db is not None:
+            within(song_key.gain_db, -60, 24, f"{kp}.gain_db")
+        for name, cutoff in (("lowpass", song_key.lowpass), ("highpass", song_key.highpass)):
+            if cutoff is not None:
+                within(cutoff, OPEN_HIGHPASS, OPEN_LOWPASS, f"{kp}.{name}")
+    if song.keyframes:
+        need(song.keyframes[-1].t <= duration + 1 / fps + 1e-6, "song.keyframes",
+             f"the last keyframe ({_s(song.keyframes[-1].t)}) is past the {_s(duration)} output")
+    tail = song.tail
+    if tail is not None:
+        within(tail.seconds, 0.05, 30, "song.tail.seconds")
+        need(0 < tail.input <= window + 1e-9, "song.tail.input",
+             f"must be above 0 and at most the song's {_s(window)}, got {tail.input:g}")
+        within(tail.wet_db, -60, 12, "song.tail.wet_db")
+        if tail.type == "echo":
+            need(tail.decay is None, "song.tail.decay", "is for type reverb; an echo fades by feedback")
+            if tail.delay is not None:
+                within(tail.delay, 0.02, 4, "song.tail.delay")
+            if tail.feedback is not None:
+                within(tail.feedback, 0, 0.95, "song.tail.feedback")
+        else:
+            need(tail.delay is None and tail.feedback is None, "song.tail",
+                 "delay and feedback are for type echo; a reverb fades by decay")
+            if tail.decay is not None:
+                within(tail.decay, 0.1, 20, "song.tail.decay")
 
     need(len(edl.clips) > 0, "clips", "at least one clip is required")
     prev_end = 0
@@ -588,16 +808,18 @@ def check(edl: Edl) -> list[str]:
 
     for i, layer in enumerate(edl.audio):
         path = f"audio[{i}]"
-        source_range(layer.src_in, layer.src_out, path)
+        if layer.src_out is None:
+            need(layer.src_in >= 0, f"{path}.src_in", f"must be >= 0, got {layer.src_in:g}")
+        else:
+            source_range(layer.src_in, layer.src_out, path)
         need(layer.timeline_in >= 0, f"{path}.timeline_in", f"must be >= 0, got {layer.timeline_in:g}")
         need(layer.track >= 0, f"{path}.track", f"must be >= 0, got {layer.track}")
         within(layer.gain_db, -60, 24, f"{path}.gain_db")
         within(layer.duck_db, -60, 0, f"{path}.duck_db")
-        seconds = layer.src_out - layer.src_in
-        need(layer.fade_in >= 0 and layer.fade_out >= 0 and layer.fade_in + layer.fade_out <= seconds + 1e-9,
-             path, "fade_in and fade_out must be >= 0 and fit in the layer")
-        ends = to_frame(layer.timeline_in, fps) / fps + seconds
-        need(ends <= duration + 1e-6, path, f"ends at {_s(ends)}, after the output ends at {_s(duration)}")
+        if layer.muffle_hz is not None:
+            within(layer.muffle_hz, OPEN_HIGHPASS, OPEN_LOWPASS, f"{path}.muffle_hz")
+        if layer.src_out is not None and layer.src_out > layer.src_in:
+            p += check_layer_span(edl, i)
 
     for i, overlay in enumerate(edl.overlays):
         path = f"overlays[{i}]"
@@ -644,6 +866,21 @@ def check(edl: Edl) -> list[str]:
     fade = edl.ending.fade_to_black
     need(fade >= 0 and to_frame(fade, fps) < total, "ending.fade_to_black",
          f"must be >= 0 and shorter than the {_s(duration)} output, got {fade:g}")
+    return p
+
+
+def check_layer_span(edl: Edl, index: int) -> list[str]:
+    """Problems with where audio layer `index` plays, once its src_out is known."""
+    layer, path = edl.audio[index], f"audio[{index}]"
+    seconds = layer_end(layer) - layer.src_in
+    duration = output_frames(edl) / edl.output.fps
+    p = []
+    if not (layer.fade_in >= 0 and layer.fade_out >= 0 and layer.fade_in + layer.fade_out <= seconds + 1e-9):
+        p.append(f"{path}: fade_in and fade_out must be >= 0 and fit in the layer")
+    ends = layer_times(layer, edl.output.fps)[1]
+    if ends > duration + 1e-6:
+        p.append(f"{path}: ends at {_s(ends)}, after the output ends at {_s(duration)}; "
+                 f"to cut it there, set src_out to {layer_end(layer) - (ends - duration):.4f}")
     return p
 
 
