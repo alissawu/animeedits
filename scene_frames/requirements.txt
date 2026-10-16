@@ -9,8 +9,12 @@ faster-whisper>=1.2.1,<1.3
 av>=16,<17
 librosa>=1.0,<2
 scipy>=1.13
-# Voice stems for audio layers (stem "voice", separate.py): BS-RoFormer through audio-separator, which
+# Voice stems for audio layers (stem "voice", separate.py) and the four song stems for analyze_edit.py (stems.py,
+# htdemucs): BS-RoFormer and Demucs through audio-separator, which
 # brings torch (about 600 MB installed). Its cpu extra is onnxruntime, imported even for torch models.
 audio-separator[cpu]>=0.47,<0.48
 # audio-separator imports audioread, which librosa 1.0 no longer installs.
 audioread>=3
+soundfile>=0.12
+# Song key, instrument and genre tags in analyze_edit.py (music.texture). Essentia publishes only dev builds of it.
+essentia-tensorflow>=2.1b6.dev1389,<2.2

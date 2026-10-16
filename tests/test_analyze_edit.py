@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scene_frames"))
 import analyze_edit as ae  # noqa: E402
+import stems as separation  # noqa: E402
 
 # The reference edit is not committed. Point ANALYZE_EDIT_VIDEO at it from another checkout.
 VIDEO = Path(os.environ.get("ANALYZE_EDIT_VIDEO", ROOT / "denreze-whitelight.mov"))
@@ -23,25 +25,44 @@ FLASHES = [(3.95, 4.10), (10.95, 11.00), (11.40, 11.45), (13.15, 13.30), (15.30,
            (15.55, 15.60), (19.30, 19.35)]  # first frame, first frame after
 
 
-def write_song(path: Path, rate: int = 22050) -> None:
-    """24 s at 120 BPM: quiet clicks, then a loud drop with bass at 8 s, then a lighter section at 16 s."""
-    t = np.arange(24 * rate) / rate
+RATE = ae.SAMPLE_RATE
+
+
+def melody(t: np.ndarray, notes: tuple[float, float], level: float) -> np.ndarray:
+    """A voice-like line: two notes a minor third apart, alternating every beat, with light vibrato."""
+    hz = np.where((t * 2).astype(int) % 2 == 0, notes[0], notes[1]) * (1 + 0.01 * np.sin(2 * np.pi * 5 * t))
+    return level * np.sin(2 * np.pi * np.cumsum(hz) / RATE)
+
+
+def synthetic_stems() -> dict[str, np.ndarray]:
+    """24 s at 120 BPM. Drums and a 55 Hz bass come in together at 8 s with a synth layer (the drop); at 16 s the
+    bass and synth leave, the drums drop back, and the voice returns an octave higher than in 0-8 s."""
+    t = np.arange(24 * RATE) / RATE
+    a, b, c = t < 8, (t >= 8) & (t < 16), t >= 16
+    burst = np.random.default_rng(0).standard_normal(int(0.02 * RATE)) * np.exp(-np.linspace(0, 6, int(0.02 * RATE)))
     clicks = np.zeros_like(t)
-    burst = np.random.default_rng(0).standard_normal(int(0.02 * rate)) * np.exp(-np.linspace(0, 6, int(0.02 * rate)))
     for beat in np.arange(0, 24, 0.5):
-        start = int(beat * rate)
+        start = int(beat * RATE)
         clicks[start:start + burst.size] += burst
-    a, b = t < 8, (t >= 8) & (t < 16)
-    c = t >= 16
-    song = (np.where(a, 0.05, np.where(b, 0.5, 0.2)) * clicks + a * 0.02 * np.sin(2 * np.pi * 880 * t)
-            + b * (0.4 * np.sin(2 * np.pi * 55 * t) + 0.2 * np.sign(np.sin(2 * np.pi * 220 * t)))
-            + c * 0.1 * np.sin(2 * np.pi * 440 * t))
+    return {
+        "drums": (np.where(b, 0.5, 0.0) + np.where(c, 0.2, 0.0)) * clicks,
+        "bass": b * 0.4 * np.sin(2 * np.pi * 55 * t),
+        "other": a * 0.02 * np.sin(2 * np.pi * 880 * t) + b * 0.2 * np.sign(np.sin(2 * np.pi * 220 * t)),
+        "vocals": a * melody(t, (220.0, 261.6), 0.08) + c * melody(t, (440.0, 523.3), 0.12),
+    }
+
+
+def write_song(path: Path) -> dict[str, np.ndarray]:
+    """The synthetic stems' mix as a 16-bit WAV; returns the stems, as float32 at RATE."""
+    parts = {k: v.astype(np.float32) for k, v in synthetic_stems().items()}
+    song = sum(parts.values())
     pcm = (np.clip(song, -1, 1) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(2)
-        out.setframerate(rate)
+        out.setframerate(RATE)
         out.writeframes(pcm.tobytes())
+    return parts
 
 
 def texture(seed: int) -> np.ndarray:
@@ -91,7 +112,7 @@ class TimelineTests(unittest.TestCase):
         words = [ae.Word(0.0, 0.5, 1), ae.Word(0.6, 3.9, 1), ae.Word(6.6, 9.2, 1)]
         phrases = ae.phrases_from(words)
         self.assertEqual(phrases, [ae.Phrase(0.0, 3.9, 2), ae.Phrase(6.6, 9.2, 1)])
-        sections = ae.sections_from(phrases, [ae.Drop(4.0, 18.0)], [0.0, 1.5, 4.1, 6.95, 9.55, 12.0], 12.0)
+        sections = ae.sections_from(phrases, [ae.Drop(4.0, 12.0, 18.0)], [0.0, 1.5, 4.1, 6.95, 9.55, 12.0], 12.0)
         self.assertEqual([(s.start, s.end, s.phrase, s.drop is not None) for s in sections], [
             (0.0, 4.1, 1, False), (4.1, 6.95, None, True), (6.95, 9.55, 2, False), (9.55, 12.0, None, False)])
 
@@ -138,18 +159,23 @@ class ReferenceEditTests(unittest.TestCase):
         self.assertTrue(12.1 <= dissolve.start * self.frame <= 12.3)
         self.assertTrue(12.8 <= dissolve.end * self.frame <= 13.05)
 
+    @staticmethod
+    def song_map(media: Path, offset: float) -> ae.AudioMap:
+        y = ae.decode_audio(media)
+        return ae.analyze_audio(y, separation.load_or_separate(media, y.size), offset)
+
     def test_audio(self):
-        audio = ae.analyze_audio(VIDEO, self.info.audio_offset)
+        audio = self.song_map(VIDEO, self.info.audio_offset)
         self.assertAlmostEqual(audio.tempo, 123, delta=2)
-        self.assertAlmostEqual(audio.drop.time, 4.0, delta=0.1)
-        self.assertGreater(audio.drop.jump_db, 12)
+        self.assertAlmostEqual(audio.drop.time, 4.0, delta=0.15)
+        self.assertGreater(audio.drop.low_db, 12)
         # The same soundtrack as a standalone file gives the same audio map.
         with tempfile.TemporaryDirectory() as tmp:
             song = Path(tmp) / "song.wav"
             subprocess.run(["ffmpeg", "-v", "error", "-i", str(VIDEO), "-vn", str(song)], check=True)
             info = ae.probe(song)
             self.assertIsNone(info.video)
-            alone = ae.analyze_audio(song, info.audio_offset)
+            alone = self.song_map(song, info.audio_offset)
         self.assertAlmostEqual(alone.tempo, audio.tempo, delta=0.5)
         self.assertAlmostEqual(alone.drop.time, audio.drop.time, delta=0.05)
 
@@ -159,7 +185,8 @@ class AudioOnlyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.song = Path(cls.tmp.name) / "song.wav"
-        write_song(cls.song)
+        cls.stems = write_song(cls.song)
+        cls.audio = ae.analyze_audio(ae.decode_audio(cls.song), cls.stems)
 
     @classmethod
     def tearDownClass(cls):
@@ -169,25 +196,69 @@ class AudioOnlyTests(unittest.TestCase):
         info = ae.probe(self.song)
         self.assertIsNone(info.video)
         self.assertTrue(info.has_audio)
-        audio = ae.analyze_audio(self.song)
+        audio = self.audio
         self.assertAlmostEqual(audio.tempo, 120, delta=3)
-        self.assertAlmostEqual(audio.drop.time, 8.0, delta=0.1)
-        self.assertTrue(any(abs(b.time - 16) <= 0.6 for b in audio.boundaries), audio.boundaries)
+        self.assertIsNone(audio.tempo_alternative)
+        self.assertAlmostEqual(audio.drop.time, 8.0, delta=0.06)
+        self.assertGreater(audio.drop.low_db, 20)
+        self.assertEqual(len(audio.drops), 1)
+        self.assertTrue(any(abs(b.time - 16) <= 0.06 for b in audio.boundaries), audio.boundaries)
         sections = ae.audio_sections(audio, [], audio.duration)
         self.assertEqual([round(s.start) for s in sections], [0, 8, 16])
         self.assertIsNotNone(sections[1].drop)
 
+    def test_stems_and_turns(self):
+        runs = {a.stem: a.runs for a in self.audio.stems}
+        self.assertEqual(len(runs["bass"]), 1)
+        self.assertAlmostEqual(runs["bass"][0][0], 8.0, delta=0.06)
+        self.assertAlmostEqual(runs["bass"][0][1], 16.0, delta=0.06)
+        self.assertAlmostEqual(runs["drums"][0][0], 8.0, delta=0.06)
+        events = {(e.part, e.change) for t in self.audio.turns if abs(t.time - 8) < 0.1 for e in t.events}
+        self.assertLessEqual({("drums", "enters"), ("bass", "enters"), ("band", "up")}, events)
+        at16 = [t for t in self.audio.turns if abs(t.time - 16) < 0.3]
+        self.assertEqual(len(at16), 1)
+        self.assertIn(("bass", "exits"), {(e.part, e.change) for e in at16[0].events})
+        self.assertLess(at16[0].low_db, -10)
+
+    def test_voice_and_bass(self):
+        shifts = self.audio.voice_shifts
+        self.assertEqual(len(shifts), 1)
+        self.assertAlmostEqual(shifts[0].time, 16.0, delta=0.06)
+        self.assertAlmostEqual(shifts[0].semitones, 12.0, delta=0.5)
+        roots = {b.root for b in self.audio.harmony.bars if 8.5 <= b.start and b.end <= 15.5}
+        self.assertEqual(roots, {"A"})
+        self.assertTrue(all(b.root is None for b in self.audio.harmony.bars if b.end <= 7.5 or b.start >= 16.5))
+
+    def test_cache_round_trip(self):
+        data = json.loads(json.dumps(asdict(self.audio)))
+        self.assertEqual(ae.audio_from_json(data), self.audio)
+
+    def test_offset_moves_every_time(self):
+        later = ae.analyze_audio(ae.decode_audio(self.song), self.stems, 1.5)
+        self.assertAlmostEqual(later.drop.time, self.audio.drop.time + 1.5, places=3)
+        self.assertAlmostEqual(later.stems[1].runs[0][0], self.audio.stems[1].runs[0][0] + 1.5, places=3)
+        self.assertAlmostEqual(later.harmony.bars[-1].end, self.audio.harmony.bars[-1].end + 1.5, places=3)
+        self.assertAlmostEqual(later.voice_shifts[0].time, self.audio.voice_shifts[0].time + 1.5, places=3)
+
     def test_cli_writes_audio_report_only(self):
-        out = Path(self.tmp.name) / "out"
+        out, cache = Path(self.tmp.name) / "out", Path(self.tmp.name) / "stems"
+        # Cached stems stand in for the separator, so the test needs no model.
+        separation.write_stems(separation.stem_dir(self.song, cache), self.stems, self.song)
         subprocess.run([sys.executable, str(ROOT / "scene_frames/analyze_edit.py"), str(self.song), str(out),
-                        "--no-words"], check=True, capture_output=True)
+                        "--no-words", "--no-texture", "--stem-cache", str(cache)], check=True, capture_output=True)
         report = (out / "report.md").read_text()
         self.assertIn("# Audio analysis", report)
+        self.assertIn("## Turns", report)
         self.assertIn("## Sections", report)
+        self.assertIn("**Drop:** 8.0", report)
         self.assertNotIn("Cut by cut", report)
         timeline = json.loads((out / "timeline.json").read_text())
         self.assertIsNone(timeline["picture"])
+        self.assertIsNone(timeline["texture"])
         self.assertEqual(len(timeline["sections"]), 3)
+        # frames.py reads the drop times and beats from here.
+        self.assertAlmostEqual(timeline["audio"]["drops"][0]["time"], 8.0, delta=0.06)
+        self.assertGreater(len(timeline["audio"]["beats"]), 20)
         self.assertFalse((out / "sheets").exists() or (out / "frames.json").exists())
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not found")
