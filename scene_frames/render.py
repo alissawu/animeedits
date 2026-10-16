@@ -29,11 +29,11 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from edl import (DUCK_RAMP, ECHO_DELAY, ECHO_FEEDBACK, JOIN, OPEN_HIGHPASS, OPEN_LOWPASS, REVERB_DECAY, TAIL_FADE,
-                 Caption, Clip, Color, Edl, EdlError, Output, Tail, check_layer_span, clip_frames, crossfade_handle,
-                 join_seconds, layer_end, layer_times, load_edl, output_frames, reveal_frames, song_gain_db,
-                 song_highpass, song_lowpass, song_pieces, song_window, source_end, source_offset, span_frames,
-                 speed_range, to_frame, track)
+from edl import (BASS_HZ, DUCK_RAMP, ECHO_DELAY, ECHO_FEEDBACK, JOIN, OPEN_HIGHPASS, OPEN_LOWPASS, REVERB_DECAY,
+                 TAIL_FADE, Caption, Clip, Color, Edl, EdlError, Output, Tail, check_layer_span, clip_frames,
+                 crossfade_handle, join_seconds, layer_end, layer_times, load_edl, output_frames, reveal_frames,
+                 song_bass_db, song_compress, song_gain_db, song_highpass, song_lowpass, song_pieces, song_window,
+                 source_end, source_offset, span_frames, speed_range, to_frame, track)
 import separate
 from separate import SeparationError, VoiceSeparator
 
@@ -621,6 +621,7 @@ def render_stem(stem: Stem, separator: VoiceSeparator, file: Path, verbose: bool
 
 BLOCK = 256  # samples per audio frame where the song's gain and filters can change (5.3 ms)
 ECHO_FLOOR = 3e-5  # echo repeats quieter than this (-90 dB) are dropped
+BASS_Q = 0.7071  # Q of the bass shelf: the flattest that does not overshoot
 
 
 def butterworth_q(slope: int) -> tuple[float, ...]:
@@ -635,19 +636,27 @@ def filter_arg(text: str) -> str:
     return "".join("\\" + c if c in "\\'[],;" else c for c in quoted)
 
 
-def song_controls(edl: Edl) -> tuple[bool, bool, bool]:
-    """Whether the song's gain, low-pass and high-pass change over time."""
+def song_controls(edl: Edl) -> tuple[bool, bool, bool, bool, bool]:
+    """Whether the song has a bass shelf and a compressor, and whether its gain, low-pass and high-pass
+    change over time."""
     song = edl.song
-    return (bool(track(song, "gain_db")),
+    return (bool(track(song, "bass_db")),
+            song.compress is not None,
+            bool(track(song, "gain_db")),
             bool(track(song, "lowpass")) or any(layer.muffle_hz is not None for layer in edl.audio),
             bool(track(song, "highpass")))
 
 
 def control_values(edl: Edl, t: float) -> dict[str, tuple[float, int]]:
-    """(value, on) of each song control in use at output time `t`, by filter name: the linear gain, and each
-    filter's cutoff, switched off (0) at its open cutoff."""
-    gain, lowpass, highpass = song_controls(edl)
+    """(value, on) of each song control in use at output time `t`, by filter name, in processing order: the
+    bass shelf's gain in dB, the compressor's mix, the linear gain, and each filter's cutoff, switched off (0)
+    at its open cutoff."""
+    bass, compress, gain, lowpass, highpass = song_controls(edl)
     values: dict[str, tuple[float, int]] = {}
+    if bass:
+        values["lowshelf"] = (song_bass_db(edl.song, t), 1)
+    if compress:
+        values["acompressor"] = (song_compress(edl.song, t), 1)
     if gain:
         values["volume"] = (10 ** (song_gain_db(edl.song, t) / 20), 1)
     if lowpass:
@@ -676,10 +685,14 @@ def song_command_text(edl: Edl) -> str | None:
         commands = []
         for name, (value, on) in control_values(edl, (k * BLOCK + BLOCK / 2) / SAMPLE_RATE).items():
             before, was_on = last[name]
-            if abs(value - before) <= 1e-4 * before and on == was_on:
+            if abs(value - before) <= 1e-4 * abs(before) and on == was_on:
                 continue
             last[name] = (value, on)
-            if name == "volume":
+            if name == "lowshelf":
+                commands.append(f"lowshelf@song_bass gain {value:.4f}")
+            elif name == "acompressor":
+                commands.append(f"acompressor@song_compress mix {value:.6f}")
+            elif name == "volume":
                 commands.append(f"volume@song_gain volume {value:.6f}")
             else:
                 for stage in range(stages):
@@ -696,12 +709,26 @@ def song_control_filters(edl: Edl, commands: Path | None) -> list[str]:
     if commands is not None:
         filters.append(f"asendcmd=f={filter_arg(str(commands))}")
     for name, (value, on) in control_values(edl, BLOCK / 2 / SAMPLE_RATE).items():
-        if name == "volume":
+        if name == "lowshelf":
+            filters.append(f"lowshelf@song_bass=f={BASS_HZ:g}:width_type=q:width={BASS_Q}:gain={value:.4f}")
+        elif name == "acompressor":
+            filters.append(compressor_filter(edl, value))
+        elif name == "volume":
             filters.append(f"volume@song_gain=volume={value:.6f}:eval=once")
         else:
             filters += [f"{name}@song_{name}{stage}=f={value:.3f}:width_type=q:width={q:.4f}:mix={on}"
                         for stage, q in enumerate(butterworth_q(edl.song.filter_slope))]
     return filters
+
+
+def compressor_filter(edl: Edl, mix: float) -> str:
+    """acompressor with song.compress's settings, `mix` of the compressed song in its output."""
+    c = edl.song.compress
+    if c is None:
+        raise ValueError("the song has no compressor")
+    return (f"acompressor@song_compress=threshold={10 ** (c.threshold_db / 20):.6f}:ratio={c.ratio:g}"
+            f":attack={c.attack * 1000:g}:release={c.release * 1000:g}:makeup={10 ** (c.makeup_db / 20):.6f}"
+            f":mix={mix:.6f}")
 
 
 def echo_filter(tail: Tail) -> str:
@@ -1010,12 +1037,14 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
         return f"{a / fps:.3f}–{b / fps:.3f}"
 
     windows = ", ".join(f"{piece.src_in:.3f}–{piece.src_out:.3f}" for piece in song_pieces(song))
-    tail = song.tail
+    tail, comp = song.tail, song.compress
+    compressed = (f", compressed {comp.ratio:g}:1 over {comp.threshold_db:g} dB (attack {comp.attack * 1000:g} ms, "
+                  f"release {comp.release * 1000:g} ms, makeup {comp.makeup_db:+g} dB)" if comp else "")
     lines = [f"# {edl.title or name}", "",
              f"{out.width}×{out.height} at {fps} fps, {total / fps:.3f} s ({total} frames). "
              f"Song `{song.source}` {windows} s at {song.speed:g}×"
              f"{f', fade in {song.fade_in:g} s' if song.fade_in else ''}"
-             f"{f', fade out {song.fade_out:g} s' if song.fade_out else ''}"
+             f"{f', fade out {song.fade_out:g} s' if song.fade_out else ''}{compressed}"
              f"{f', {tail.type} tail {tail.seconds:g} s from the last {tail.input:g} s' if tail else ''}"
              f"{f', ending fade to black {edl.ending.fade_to_black:g} s' if edl.ending.fade_to_black else ''}.", ""]
     if edl.notes:
@@ -1034,11 +1063,18 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
     if cursor < total:
         lines.append(f"| | {span(cursor, total)} | {total - cursor} | black | | | | | |")
     if song.keyframes:
-        lines += ["", "| Song key | Time (s) | Ease | Gain | Low-pass | High-pass |", "|---|---|---|---|---|---|"]
+        bass, compress = bool(track(song, "bass_db")), bool(track(song, "compress"))
+        headers = ["Song key", "Time (s)", "Ease", "Gain", "Low-pass", "High-pass"]
+        headers += ["Bass"] * bass + ["Compress"] * compress
+        lines += ["", f"| {' | '.join(headers)} |", "|" + "---|" * len(headers)]
         for i, key in enumerate(song.keyframes):
             cells = [f"{key.gain_db:+g} dB" if key.gain_db is not None else "",
                      f"{key.lowpass:g} Hz" if key.lowpass is not None else "",
                      f"{key.highpass:g} Hz" if key.highpass is not None else ""]
+            if bass:
+                cells.append(f"{key.bass_db:+g} dB" if key.bass_db is not None else "")
+            if compress:
+                cells.append(f"{key.compress:.0%}" if key.compress is not None else "")
             lines.append(f"| {i + 1} | {key.t:.3f} | {key.ease} | {' | '.join(cells)} |")
     if edl.audio:
         lines += ["", "| Audio layer | Time (s) | Source | Source time (s) | Gain | Song duck | Why |",
