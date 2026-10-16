@@ -15,9 +15,11 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 
 ## How to work
 
-How you research, plan and build is up to you. One thing is not: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to and the edit says what you meant it to. Revise until it does.
+How you research, plan and build is up to you. What tends to work is planning from understanding rather than from browsing: knowing the song and the story well enough to say which stretch of the song you'll use, what it feels like, what the edit is about, and which moments it hinges on, then going to the footage to find those moments and discover what you didn't know to look for. It also helps to think through what the viewer goes through against the song: what they expect, where it turns, where it peaks, how it leaves them.
 
-Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (where the song meets the story, the stretch of song, the moment the edit hinges on) and wait for a pick. Otherwise choose the strongest and build it.
+One thing is not up to you: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to. Then watch it as a viewer: what each cut makes you expect and feel, and whether the edit does what you planned. Revise until it does.
+
+Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (the stretch of song and what it feels like, what the edit is about, the moments it hinges on, what the viewer goes through) and wait for a pick. Otherwise choose the strongest and build it.
 
 Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. Research on a show's cast can double as `index.py --context`; the format is in [docs/pipeline.md](docs/pipeline.md#captions).
 
@@ -54,9 +56,9 @@ Things you can't see from the code:
 - **Dialogue buried under music in footage:** before transcribing, `index.py` skips stretches it thinks have no speech (voice activity detection, or VAD). That also drops lines mixed under a song or loud score. If a scene's dialogue is missing from `shots.json`, rerun with `--no-vad`. `analyze_edit.py` already runs without VAD.
 - **Vertical crops:** a 9:16 crop of 16:9 footage keeps only the middle third. Subjects at the edges disappear, like two hands at either side of the frame. Set each clip's `crop` focus and check it on the proof sheet.
 - **Indexes are shared between edits.** Index each film or episode into `out/index/NAME/`, where NAME is the video's file name without its extension, with exactly this command:
-  `python scene_frames/index.py VIDEO out/index/NAME --sample 5 --proxy 480 --faces anime --lang LANG --context out/index/SHOW.md`
+  `python scene_frames/index.py VIDEO out/index/NAME --sample 5 --proxy 480 --faces anime --lang LANG --context out/index/CAST.md`
   LANG is the audio's language (`en`, `ja`). Add `--subs FILE` when index.py lists a subtitle file beside the video. Every stage is cached, so the command finishes a partial index, and on a finished one it only rebuilds the contact sheets, a minute or two. Other options redo detection for the whole video.
-- **Cast notes are shared too.** `out/index/SHOW.md` (e.g. `chainsaw_man.md`) holds one show's cast notes for every video of it. If captions keep misnaming someone, fix the notes, but every video of that show gets re-captioned.
+- **Cast notes are shared too.** `out/index/CAST.md` holds the cast notes for one film, season or arc, used by every video of it, e.g. `jujutsu_kaisen_0.md` and `jujutsu_kaisen_s2_hidden_inventory.md`. Characters look different across them (ages, outfits), and listing characters who never appear makes captions guess them, so each describes only its own. Use the existing file when there is one. If captions keep misnaming someone, fix the notes, but every video that uses them gets re-captioned.
 - **Captions say what a still shows; `story.json` says where it falls in the plot.** After indexing, write the episode's or film's plot in order to `out/index/NAME/synopsis.md` (a Fandom wiki episode summary works well), then run `story.py`. It's cached and shared like the index. Before trusting a caption's character name, check `story.json` for a flag on that shot.
 - **Captioning needs no API key.** By default it runs through `claude -p` on the Claude Code sign-in, and so does `story.py`.
 
@@ -67,7 +69,7 @@ Things you can't see from the code:
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
   - the render
-  - a short `notes.md` with the concept you went with and what you'd change next time
+  - a short `notes.md` with the concept you went with, the moments you planned and which of them you found in the footage, and what you'd change next time
 
 ## Code
 
