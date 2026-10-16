@@ -18,6 +18,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
+import av
+import detect
 from detect import extract_frames
 spec = importlib.util.spec_from_file_location("shot_index", Path(__file__).resolve().parents[1] / "scene_frames/index.py")
 assert spec and spec.loader
@@ -159,6 +161,51 @@ class SyntheticVideoTests(unittest.TestCase):
             self.assertGreater(top["share"], 0.95)
             np.testing.assert_allclose(rgb(top["hex"][1:]), rgb(color), atol=10)
         self.assertLess(hue_distance(self.shots[0]["look"]["hue"], 228), 15, "blue background")
+
+    def test_stills_decode_like_opencv(self) -> None:
+        """Full-size frames from PyAV, in hardware where there is one, match OpenCV's VideoCapture pixel for pixel,
+        turned upright as it turns them, so stills and look stats are what earlier indexes got."""
+        videos = [self.mp4]
+        for degrees in (90, 180, 270):  # rotation metadata, as phones write it
+            rotated = self.root / f"rotated_{degrees}.mp4"
+            try:
+                ffmpeg("-display_rotation", str(degrees), "-i", str(self.mp4), "-c", "copy", str(rotated))
+            except subprocess.CalledProcessError:
+                continue  # an ffmpeg older than 6.0 has no -display_rotation
+            videos.append(rotated)
+        for video in videos:
+            cap = cv2.VideoCapture(str(video))
+            expected = [cap.read()[1] for _ in range(SHOTS[-1][1])]
+            cap.release()
+            info = detect.probe_video(video)
+            self.assertEqual((info.width, info.height), expected[0].shape[1::-1], video.name)
+            for name, container in (("default", detect.open_video(video)), ("software", av.open(str(video)))):
+                with container:
+                    frames = [detect.to_bgr(detect.as_software(frame, info.pix_fmt), info.rotation)
+                              for frame in container.decode(container.streams.video[0])]
+                self.assertEqual(len(frames), len(expected), name)
+                for k, (got, want) in enumerate(zip(frames, expected)):
+                    np.testing.assert_array_equal(got, want, f"{video.name} {name} frame {k}")
+
+    def test_software_decoding_gives_the_same_shots(self) -> None:
+        with mock.patch.object(detect, "hwdevices_available", return_value=[]), \
+                mock.patch.object(detect, "ffmpeg_hw_decoding", return_value=False):
+            shots = extract_frames(self.mp4, self.root / "software", proxy=160)
+        self.assertEqual(shots, extract_frames(self.mp4, self.root / "proxied", proxy=160))
+        for shot in shots:
+            for still in (shot["file"], shot["first"]["file"], shot["last"]["file"]):
+                self.assertEqual((self.root / "software" / still).read_bytes(),
+                                 (self.root / "proxied" / still).read_bytes(), still)
+
+    @unittest.skipUnless(detect.ffmpeg_hw_decoding(), "needs ffmpeg with hardware decoding")
+    def test_proxy_is_identical_from_hardware(self) -> None:
+        pix_fmt = detect.probe_video(self.mp4).pix_fmt
+        proxies = []
+        for hw_pix_fmt in (pix_fmt, None):
+            out = self.root / f"proxy_{hw_pix_fmt}.mp4"
+            subprocess.run(detect.proxy_command(self.mp4, out, 160, hw_pix_fmt), check=True)
+            proxies.append(out.read_bytes())
+        self.assertEqual(proxies[0], proxies[1])
 
     def test_probe_and_decode_streams(self) -> None:
         audio = index.probe_streams(self.mkv, "audio")

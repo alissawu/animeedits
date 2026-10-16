@@ -11,6 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scene_frames"))
 import cast_notes
+from concurrent.futures import ThreadPoolExecutor
+
+import detect
 from detect import flash_runs, motion_peaks, positive_int, usable_range
 spec = importlib.util.spec_from_file_location("shot_index", Path(__file__).resolve().parents[1] / "scene_frames/index.py")
 assert spec and spec.loader
@@ -65,6 +68,61 @@ class PipelineTests(unittest.TestCase):
             index.save(path, {"signature": {"model": "a"}, "data": []})
             self.assertEqual(index.cached(path, {"model": "a"}), [])
             self.assertIsNone(index.cached(path, {"model": "b"}))
+
+
+class DecodeTests(unittest.TestCase):
+    def test_proxy_command(self) -> None:
+        hw = detect.proxy_command("in.mp4", "out.mp4", 480, "yuv420p10le")
+        software = detect.proxy_command("in.mp4", "out.mp4", 480)
+        self.assertEqual(hw[hw.index("-hwaccel") + 1], detect.HW_DECODER)
+        self.assertEqual(hw[hw.index("-vf") + 1], "format=yuv420p10le,scale=480:-2")
+        self.assertNotIn("-hwaccel", software)
+        self.assertEqual(software[software.index("-vf") + 1], "scale=480:-2")
+        self.assertEqual([c for c in hw if c not in ("-hwaccel", detect.HW_DECODER)][:5], software[:5])
+
+    def test_make_proxy_falls_back_to_software(self) -> None:
+        def run(cmd: list[str], **kwargs: Any) -> None:
+            calls.append(cmd)
+            if "-hwaccel" in cmd and fail_hw:
+                raise detect.subprocess.CalledProcessError(69, cmd)
+        for available, pix_fmt, fail_hw, expected in ((True, "yuv420p", False, [True]),
+                                                      (True, "yuv420p", True, [True, False]),
+                                                      (True, None, False, [False]),
+                                                      (False, "yuv420p", False, [False])):
+            calls: list[list[str]] = []
+            with mock.patch.object(detect, "ffmpeg_hw_decoding", return_value=available), \
+                    mock.patch.object(detect.subprocess, "run", side_effect=run):
+                detect.make_proxy("in.mp4", "out.mp4", 480, pix_fmt)
+            self.assertEqual(["-hwaccel" in cmd for cmd in calls], expected)
+
+    def test_ffmpeg_hw_decoding(self) -> None:
+        listed = SimpleNamespace(stdout="Hardware acceleration methods:\nvideotoolbox\n\n")
+        missing = SimpleNamespace(stdout="Hardware acceleration methods:\ncuda\n")
+        for result, expected in ((listed, True), (missing, False), (OSError("no ffmpeg"), False)):
+            detect.ffmpeg_hw_decoding.cache_clear()
+            with mock.patch.object(detect.subprocess, "run", side_effect=[result]):
+                self.assertEqual(detect.ffmpeg_hw_decoding(), expected)
+        detect.ffmpeg_hw_decoding.cache_clear()
+
+    def test_converted_keeps_order_and_raises(self) -> None:
+        def work(k: int, frame: Any) -> Any:
+            if frame == "bad":
+                raise RuntimeError("cannot convert")
+            return (k, frame)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            frames = [f"frame {k}" for k in range(20)]
+            self.assertEqual(list(detect.converted(iter(frames), work, pool, 4)), list(enumerate(frames)))
+            self.assertEqual(list(detect.converted(iter([]), work, pool, 4)), [])
+            with self.assertRaisesRegex(RuntimeError, "cannot convert"):
+                list(detect.converted(iter(["a", "bad", "c"]), work, pool, 1))
+
+    def test_shot_frames(self) -> None:
+        lo, hi, selected, look_at = detect.shot_frames(100, 160, 5)
+        self.assertEqual((lo, hi), usable_range(100, 160))
+        self.assertEqual(len(selected or ()), 5)
+        self.assertEqual(len(look_at), detect.LOOK_FRAMES)
+        self.assertTrue(all(lo <= k < hi for k in (selected or set()) | look_at))
+        self.assertIsNone(detect.shot_frames(0, 3, None)[2])
 
 
 class FlashTests(unittest.TestCase):

@@ -10,19 +10,25 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+import functools
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Literal, NamedTuple, NotRequired, TypedDict, cast
 
+import av
+from av.codec.hwaccel import HWAccel, hwdevices_available
 import cv2
 import numpy as np
 from scenedetect import ContentDetector, detect
 
 HERE = Path(__file__).resolve().parent
+HW_DECODER = "videotoolbox"  # Apple's hardware decoder; on other machines video decodes in software
 YUNET = HERE / "models" / "face_detection_yunet_2023mar.onnx"
 ANIME = HERE / "models" / "lbpcascade_animeface.xml"
 N_CHUNKS = 3
@@ -36,6 +42,8 @@ FLASH_MAX_S = 0.25      # longer bright stretches are lighting changes, not flas
 PEAK_WINDOW_S = 0.25    # motion is smoothed over this window; peaks are further apart than it
 PEAK_RATIO = 1.5        # a peak must exceed this multiple of the shot's median motion...
 PEAK_FLOOR = 0.05       # ...and this many frame widths per second
+# Threads converting decoded frames to BGR. FFmpeg converts a frame on one thread, in about 5 ms at 1080p.
+CONVERT_WORKERS = max(1, min(6, os.cpu_count() or 1))
 
 Frame = cv2.typing.MatLike
 FaceMode = Literal["live", "anime"]
@@ -72,6 +80,15 @@ class Look(TypedDict):
     hue: float | None   # degrees, saturation-weighted; None for near-gray shots
     saturation: float   # 0-1
     palette: list[Swatch]
+
+
+class VideoInfo(NamedTuple):
+    fps: float
+    frames: int
+    width: int  # as displayed, after rotation
+    height: int
+    pix_fmt: str | None  # as decoded in software
+    rotation: int  # degrees counterclockwise the frames are turned for display: 0, 90, 180 or 270
 
 
 class Shot(TypedDict):
@@ -239,17 +256,95 @@ def look_stats(frames: Sequence[Frame]) -> Look:
     return Look(luma=round(float(luma.mean()), 3), hue=hue, saturation=round(float(sat.mean()), 3), palette=palette)
 
 
-def find_cuts(input: str | Path, threshold: float, min_len: int, proxy: int | None) -> list[tuple[int, int]]:
+@functools.cache
+def ffmpeg_hw_decoding() -> bool:
+    """Whether the ffmpeg command can decode on HW_DECODER."""
+    try:
+        listed = subprocess.run(["ffmpeg", "-hide_banner", "-hwaccels"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return HW_DECODER in listed.stdout.split()
+
+
+def proxy_command(input: str | Path, out: str | Path, width: int, hw_pix_fmt: str | None = None) -> list[str]:
+    """ffmpeg arguments for the cut-detection proxy, decoding on HW_DECODER when given the video's software-decoded
+    pixel format. A hardware decoder hands frames over in its own layout (p010le, nv12) and the scaler rounds that
+    differently, so they go back to that format first: decoding itself is exact, which keeps the proxy
+    byte-identical, and so the cuts, wherever it is made."""
+    decode = ["-hwaccel", HW_DECODER] if hw_pix_fmt else []
+    repack = f"format={hw_pix_fmt}," if hw_pix_fmt else ""
+    return ["ffmpeg", "-nostdin", "-v", "error", *decode, "-i", str(input), "-an", "-vf", f"{repack}scale={width}:-2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-threads", "4", "-y", str(out)]
+
+
+def make_proxy(input: str | Path, out: str | Path, width: int, pix_fmt: str | None) -> None:
+    """Write the cut-detection proxy, decoding in hardware where ffmpeg can. For a codec the hardware can't decode
+    (VideoToolbox has no AV1 before the M3) ffmpeg sometimes fails instead of falling back, so that is retried in
+    software."""
+    if pix_fmt is not None and ffmpeg_hw_decoding():
+        try:
+            subprocess.run(proxy_command(input, out, width, pix_fmt), check=True, capture_output=True)
+            return
+        except subprocess.CalledProcessError:
+            pass
+    subprocess.run(proxy_command(input, out, width), check=True)
+
+
+def find_cuts(input: str | Path, threshold: float, min_len: int, proxy: int | None,
+              pix_fmt: str | None = None) -> list[tuple[int, int]]:
+    """Shots as [start, end) frame ranges, found on a temporary proxy PROXY px wide when given. pix_fmt, the video's
+    software-decoded pixel format, lets the proxy decode in hardware."""
     with tempfile.TemporaryDirectory(prefix="animeedits-") as tmp:
         source = str(input)
         if proxy:
             source = str(Path(tmp) / "proxy.mp4")
-            subprocess.run(["ffmpeg", "-v", "error", "-i", str(input), "-an",
-                            "-vf", f"scale={proxy}:-2", "-c:v", "libx264",
-                            "-preset", "ultrafast", "-crf", "27", "-threads", "4",
-                            source], check=True)
+            make_proxy(input, source, proxy, pix_fmt)
         return [(s.frame_num, e.frame_num) for s, e in
                 detect(source, ContentDetector(threshold=threshold, min_scene_len=min_len))]
+
+
+def probe_video(input: str | Path) -> VideoInfo:
+    """The first video stream as OpenCV reported it for earlier indexes: the average frame rate, the container's
+    frame count (else duration x rate) and the displayed size; plus its software-decoded pixel format and rotation,
+    read off the first frame, since hardware-decoded frames don't carry it."""
+    try:
+        with av.open(str(input)) as container:
+            if not container.streams.video:
+                raise ValueError(f"no video stream in {input}")
+            stream = container.streams.video[0]
+            rate = stream.average_rate or stream.guessed_rate
+            fps = float(rate) if rate else 0.0
+            duration = container.duration / av.time_base if container.duration else 0.0
+            first = next(container.decode(stream), None)
+            if first is None:
+                raise ValueError(f"no frames in {input}")
+            rotation = first.rotation % 360
+            width, height = stream.codec_context.width, stream.codec_context.height
+            if rotation in (90, 270):
+                width, height = height, width
+            return VideoInfo(fps=fps, frames=stream.frames or math.floor(duration * fps + 0.5), width=width,
+                             height=height, pix_fmt=stream.codec_context.pix_fmt, rotation=rotation)
+    except (av.FFmpegError, OSError) as e:
+        raise ValueError(f"cannot open video: {input} ({e})") from None
+
+
+def open_video(input: str | Path) -> av.container.InputContainer:
+    """The video for decoding, on HW_DECODER where PyAV has it (falling back to software for codecs it can't do)."""
+    hwaccel = HWAccel(HW_DECODER, allow_software_fallback=True) if HW_DECODER in hwdevices_available() else None
+    try:
+        return av.open(str(input), hwaccel=hwaccel)
+    except (av.FFmpegError, OSError) as e:
+        raise ValueError(f"cannot open video: {input} ({e})") from None
+
+
+UPRIGHT = {90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_CLOCKWISE}
+
+
+def to_bgr(frame: av.VideoFrame, rotation: int = 0) -> Frame:
+    """A decoded frame as BGR pixels, turned upright: the conversion OpenCV's VideoCapture makes, pixel for pixel,
+    given a frame in the software decoder's format (as_software)."""
+    bgr = frame.to_ndarray(format="bgr24", interpolation="BICUBIC")
+    return cv2.rotate(bgr, UPRIGHT[rotation]) if rotation in UPRIGHT else bgr
 
 
 def downscale(img: Frame, factor: int) -> Frame:
@@ -263,64 +358,107 @@ def write_jpeg(path: Path, img: Frame) -> None:
         raise OSError(f"cannot write {path}")
 
 
+class Converted(NamedTuple):
+    frame: av.VideoFrame
+    gray: Frame  # about ANALYSIS_WIDTH wide, for motion and flashes
+    full: Frame | None  # full-size BGR, for frames that may become a keyframe or count toward look stats
+
+
+def as_software(frame: av.VideoFrame, pix_fmt: str | None) -> av.VideoFrame:
+    """The frame in the software decoder's pixel format. Hardware decoders hand frames over in their own layout
+    (nv12, p010le), which FFmpeg converts to BGR a little differently; repacking them is lossless and makes every
+    conversion after it what software decoding gives."""
+    return frame if pix_fmt is None or frame.format.name == pix_fmt else frame.reformat(format=pix_fmt)
+
+
+def convert(frame: av.VideoFrame, info: VideoInfo, small_factor: int, keep: bool) -> Converted:
+    """A decoded frame in the software decoder's pixel format, its grayscale downscaled by small_factor and, when
+    `keep`, its full-size pixels."""
+    frame = as_software(frame, info.pix_fmt)
+    bgr = to_bgr(frame, info.rotation)
+    return Converted(frame, downscale(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), small_factor), bgr if keep else None)
+
+
+def converted(frames: Iterator[av.VideoFrame], work: Callable[[int, av.VideoFrame], Converted],
+              pool: ThreadPoolExecutor, ahead: int) -> Iterator[Converted]:
+    """work(f, frame) for each decoded frame in order, with up to `ahead` frames converting in the pool while the
+    next ones decode. PyAV releases the GIL while it decodes and scales."""
+    pending: deque[Future[Converted]] = deque()
+    for f, frame in enumerate(frames):
+        pending.append(pool.submit(work, f, frame))
+        if len(pending) > ahead:
+            yield pending.popleft().result()
+    while pending:
+        yield pending.popleft().result()
+
+
+def shot_frames(a0: int, b: int, sample: int | None) -> tuple[int, int, set[int] | None, set[int]]:
+    """A shot's usable range [lo, hi), the frames scored for its keyframe (None: all of them) and the look frames."""
+    lo, hi = usable_range(a0, b)
+    selected = set(np.linspace(lo, hi - 1, min(sample, hi - lo), dtype=int).tolist()) if sample else None
+    return lo, hi, selected, set(np.linspace(lo, hi - 1, min(LOOK_FRAMES, hi - lo), dtype=int).tolist())
+
+
 def extract_frames(input: str | Path, out_dir: str | Path, *, faces: FaceMode | None = None,
                    sample: int | None = None, threshold: float = 23, min_len: int = 8,
                    proxy: int | None = None) -> list[Shot]:
-    """Detect cuts, then stream original frames; keep only one shot in memory."""
+    """Detect cuts, then decode the original once more, converting frames on CONVERT_WORKERS threads; keep only one
+    shot in memory."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     det = make_detector(faces)
     n_chunks = N_CHUNKS if det is not None else 1
-    cap = cv2.VideoCapture(str(input))
-    if not cap.isOpened():
-        raise ValueError(f"cannot open video: {input}")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    info = probe_video(input)
+    fps, total, width, height = info.fps, info.frames, info.width, info.height
     if fps <= 0 or total <= 0 or width <= 0 or height <= 0:
-        cap.release()
         raise ValueError("video has no readable frames or frame rate")
     small_factor = max(1, round(width / ANALYSIS_WIDTH))
     look_factor = max(1, round(width / LOOK_WIDTH))
     max_flash = max(1, round(fps * FLASH_MAX_S))
+    scenes = find_cuts(input, threshold, min_len, proxy, info.pix_fmt) or [(0, total)]
+    plans = [shot_frames(a0, b, sample) for a0, b in scenes]
+    keep_at: set[int] = set()  # frames whose full-size pixels a shot may use
+    for lo, hi, selected, look_at in plans:
+        keep_at |= look_at | (set(range(lo, hi)) if selected is None else selected)
+    container = open_video(input)
+    pool = ThreadPoolExecutor(max_workers=CONVERT_WORKERS)
     try:
-        scenes = find_cuts(input, threshold, min_len, proxy) or [(0, total)]
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        frames = converted(container.decode(stream),
+                           lambda k, frame: convert(frame, info, small_factor, k in keep_at),
+                           pool, 2 * CONVERT_WORKERS)
         shots: list[Shot] = []
         f = 0
-        for i, (a0, b) in enumerate(scenes, 1):
+        for i, ((a0, b), (lo, hi, selected, look_at)) in enumerate(zip(scenes, plans), 1):
             n = b - a0
-            lo, hi = usable_range(a0, b)
-            selected = (set(np.linspace(lo, hi - 1, min(sample, hi - lo), dtype=int).tolist())
-                        if sample else None)
-            look_at = set(np.linspace(lo, hi - 1, min(LOOK_FRAMES, hi - lo), dtype=int).tolist())
             # Each chunk keeps alternates so a flash can be dropped once the shot's flashes are known.
             chunks: list[list[tuple[float, int, Frame]]] = [[] for _ in range(n_chunks)]
             flow: list[float] = []  # flow[k - 1]: speed into shot frame k
             luma: list[float] = []
             look_frames: list[tuple[int, Frame]] = []
-            head: list[Frame] = []  # enough frames to step past a leading flash
-            tail: deque[Frame] = deque(maxlen=max_flash + 1)  # ...and back from a trailing one
+            # Decoded frames rather than pixels, which only candidates and look frames keep.
+            head: list[av.VideoFrame] = []  # enough frames to step past a leading flash
+            tail: deque[av.VideoFrame] = deque(maxlen=max_flash + 1)  # ...and back from a trailing one
             prev: Frame | None = None
             while f < b:
+                item = next(frames, None)
+                if item is None:
+                    raise RuntimeError(f"video ended unexpectedly at frame {f}")
                 if f < a0:
-                    if not cap.grab():
-                        raise RuntimeError(f"video ended unexpectedly at frame {f}")
                     f += 1
                     continue
-                ok, fr = cap.read()
-                if not ok:
-                    raise RuntimeError(f"video ended unexpectedly at frame {f}")
-                gray = downscale(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY), small_factor)
+                frame, gray, fr = item
                 luma.append(float(gray.mean()) / 255)
                 if prev is not None:
                     flow.append(round(flow_speed(prev, gray) / gray.shape[1] * fps, 4))
                 prev = gray
                 if len(head) <= max_flash:
-                    head.append(fr)
-                tail.append(fr)
-                if f in look_at:
+                    head.append(frame)
+                tail.append(frame)
+                if fr is not None and f in look_at:
                     look_frames.append((f, downscale(fr, look_factor)))
-                if lo <= f < hi and (selected is None or f in selected):
+                if fr is not None and lo <= f < hi and (selected is None or f in selected):
                     chunk = chunks[min(n_chunks - 1, (f - lo) * n_chunks // (hi - lo))]
                     chunk.append((score_frame(fr), f, fr))
                     if len(chunk) > max_flash + 1:
@@ -348,11 +486,11 @@ def extract_frames(input: str | Path, out_dir: str | Path, *, faces: FaceMode | 
             if first_k > last_k:
                 first_k, last_k = 0, n - 1
             edges: dict[str, Still] = {}
-            for edge, k, img in (("first", first_k, head[first_k]),
-                                 ("last", last_k, tail[last_k - (n - len(tail))])):
+            for edge, k, edge_frame in (("first", first_k, head[first_k]),
+                                        ("last", last_k, tail[last_k - (n - len(tail))])):
                 t = (a0 + k) / fps
                 edges[edge] = Still(time=round(t, 3), file=f"scene_{i:04d}_{edge}_{t:06.2f}s.jpg")
-                write_jpeg(out / edges[edge]["file"], img)
+                write_jpeg(out / edges[edge]["file"], to_bgr(edge_frame, info.rotation))
 
             # Optical flow assumes constant brightness, so it means nothing across a flash.
             curve: list[float | None] = [None, *flow]
@@ -375,7 +513,8 @@ def extract_frames(input: str | Path, out_dir: str | Path, *, faces: FaceMode | 
         (out / "scenes.json").write_text(json.dumps(shots, indent=2))
         return shots
     finally:
-        cap.release()
+        pool.shutdown(cancel_futures=True)
+        container.close()
 
 
 def main() -> None:
