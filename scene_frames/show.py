@@ -24,6 +24,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shlex
 import shutil
 import subprocess
@@ -35,10 +36,10 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 
 # Only the light modules load up front: index.py brings in scenedetect and OpenCV, which only `try` needs.
 try:
-    from cast_notes import Names, canonical_characters, cast_names, name_key, read_context
+    from cast_notes import Names, canonical_characters, canonical_name, cast_names, name_key, read_context
 except ImportError:  # imported as scene_frames.show
     from .cast_notes import (Names, canonical_characters,  # type: ignore[import-not-found,no-redef]
-                             cast_names, name_key, read_context)
+                             canonical_name, cast_names, name_key, read_context)
 
 if TYPE_CHECKING:
     from index import IndexedShot
@@ -53,6 +54,8 @@ STORY_SCRIPT = HERE / "story.py"
 SHARED_OPTIONS = ("--sample", "5", "--proxy", "480", "--faces", "anime")
 DEFAULT_JOBS = 2  # detection and Whisper are CPU-heavy; much past 3 at a time only makes each slower
 WARNING = "warning: "
+PREPARED = ("dialogue from ", "subtitles: ", "subtitle timing ")  # index.py lines prepare's summary shows
+POSSESSIVE = re.compile(r"['’]s\b")
 TAIL_LINES = 12  # of a failed run's output, in the summary
 NOISE = ("objc[",)  # duplicate-library notices from cv2 and PyAV on macOS
 WRAP = 110
@@ -252,17 +255,35 @@ def meaningful(output: Sequence[str]) -> list[str]:
     return [line for line in output if line.strip() and not line.startswith(NOISE)]
 
 
-def result_lines(name: str, run: Run, log: Path) -> tuple[bool, list[str]]:
-    """Whether a run worked, and what the summary shows of it: its warnings and last line, or the end of a failure."""
+def result_lines(name: str, run: Run, log: Path, keep: tuple[str, ...] = ()) -> tuple[bool, list[str]]:
+    """Whether a run worked, and what the summary shows of it: lines starting with one of keep, its warnings and its
+    last line, or the end of a failure."""
     lines = meaningful(run["output"])
     if run["returncode"] != 0:
         return False, [f"{name} exited with {run['returncode']}; the end of its output (all of it is in {log}):",
                        *(f"  {line}" for line in lines[-TAIL_LINES:])]
-    return True, [line for line in lines if line.startswith(WARNING)] + lines[-1:]
+    return True, [line for line in lines[:-1] if line.startswith((*keep, WARNING))] + lines[-1:]
 
 
 def missing(paths: Sequence[tuple[str, Path | None]]) -> list[str]:
     return [f"no {what} at {path}" for what, path in paths if path is not None and not path.is_file()]
+
+
+def research_problems(video: Video) -> list[str]:
+    """What keeps a video's research from being ready for finish: cast notes without a `## Cast` section or `### `
+    entries, or a synopsis that is missing or empty."""
+    problems = missing([("cast notes", video.group.cast), ("synopsis", video.synopsis)])
+    if video.group.cast.is_file():
+        try:
+            _, cast = read_context(video.group.cast)
+        except (OSError, ValueError) as e:
+            problems.append(str(e))
+        else:
+            if not cast_names(cast):
+                problems.append(f"{video.group.cast} has no `### ` entries yet")
+    if video.synopsis.is_file() and not video.synopsis.read_text(encoding="utf-8").strip():
+        problems.append(f"{video.synopsis} is empty")
+    return problems
 
 
 def prepare(video: Video, out_root: Path) -> Outcome:
@@ -271,13 +292,12 @@ def prepare(video: Video, out_root: Path) -> Outcome:
         return Outcome(video, False, lines=problems)
     out = out_root / video.name
     ok, lines = result_lines("index.py", run_logged(index_command(video, out, "prepare"), out / "index.log"),
-                             out / "index.log")
+                             out / "index.log", PREPARED)
     return Outcome(video, ok, lines=lines)
 
 
 def finish(video: Video, out_root: Path) -> Outcome:
-    problems = missing([("video", video.video), ("subtitle file", video.subs), ("cast notes", video.group.cast),
-                        ("synopsis", video.synopsis)])
+    problems = missing([("video", video.video), ("subtitle file", video.subs)]) + research_problems(video)
     if problems:
         return Outcome(video, False, lines=problems)
     out, log = out_root / video.name, out_root / video.name / "index.log"
@@ -311,7 +331,7 @@ def name_report(shots: Sequence[IndexedShot], names: Names, synopsis: str) -> li
             count[c["name"]] += 1
             unsure[c["name"]] += not c["certain"]
     known = {name_key(n) for n in names}
-    text = name_key(synopsis)
+    text = f"{name_key(synopsis)} {name_key(POSSESSIVE.sub('', synopsis))}"  # "Rika's soul" mentions Rika
     return [NameCount(name=name, shots=n, unsure=unsure[name], in_cast=name_key(name) in known,
                       in_synopsis=mentioned(name, names, text))
             for name, n in sorted(count.items(), key=lambda item: (-item[1], item[0]))]
@@ -398,14 +418,36 @@ def try_notes(video: Video, out: Path, sheets: Sequence[int]) -> list[str]:
         return [line for lines in pool.map(caption, sheets) for line in lines]
 
 
-def research_missing(videos: Sequence[Video], show: Show) -> list[str]:
-    """The cast notes and synopses that finish needs and that don't exist yet."""
+def research_missing(videos: Sequence[Video]) -> list[str]:
+    """What finish needs from the research and doesn't have yet, once per problem."""
+    return list(dict.fromkeys(problem for v in videos for problem in research_problems(v)))
+
+
+def name_lines(video: Video, out: Path, name: str) -> list[str]:
+    """Every shot whose caption names someone, with its keyframe and what the story pass made of the name."""
+    try:
+        shots: list[IndexedShot] = json.loads((out / "shots.json").read_text(encoding="utf-8"))
+        _, cast = read_context(video.group.cast)
+    except (OSError, ValueError) as e:
+        return [f"no shots to search: {e}"]
+    target = canonical_name(name, cast_names(cast))
+    try:
+        story: list[StoryScene] = json.loads((out / "story.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        story = []
+    corrected = {shot["id"]: shot["characters"] for scene in story for shot in scene.get("shots", [])
+                 if "caption_characters" in shot}
     lines: list[str] = []
-    for group in dict.fromkeys(v.group for v in videos):
-        if not group.cast.is_file():
-            lines.append(f"cast notes for {group.name}: {group.cast.relative_to(show.root)}")
-    lines += [f"synopsis of {v.name}: {v.synopsis.relative_to(show.root)}" for v in videos if not v.synopsis.is_file()]
-    return lines
+    for shot in shots:
+        named = next((c for c in shot["characters"] if c["name"] == target), None)
+        if named is None:
+            continue
+        story_note = ""
+        if shot["id"] in corrected and not any(c["name"] == target for c in corrected[shot["id"]]):
+            story_note = f' [story: {", ".join(c["name"] for c in corrected[shot["id"]]) or "nobody"}]'
+        lines.append(f'{shot["id"]:04d} {shot["start"]:.1f}-{shot["end"]:.1f}s '
+                     f'{"" if named["certain"] else "possibly "}{target}{story_note}  {out / shot["keyframe"]["file"]}')
+    return [f"{len(lines)} shots name {target}"] + [f"  {line}" for line in lines]
 
 
 def clock(seconds: float) -> str:
@@ -455,6 +497,7 @@ def main() -> None:
                          "try takes one video")
     ap.add_argument("--sheets", nargs="+", type=positive_int, default=[], metavar="N",
                     help="for try: the contact sheets to caption, by number (sheets/sheet_NNNN.jpg)")
+    ap.add_argument("--name", help="for report: list every shot whose caption gives this name, with its keyframe")
     ap.add_argument("--jobs", type=positive_int, default=DEFAULT_JOBS, help="videos indexed at once")
     ap.add_argument("--media", type=Path, default=REPO / "media", help="the folder the manifest's video paths start in")
     ap.add_argument("--out", type=Path, default=REPO / "out" / "index", help="where the indexes go")
@@ -492,7 +535,9 @@ def main() -> None:
     if a.command == "report":
         for v in videos:
             print(f"\n{v.name}  ({v.group.name})")
-            for line in video_report(v, out / v.name) + story_corrections(out / v.name):
+            lines = (name_lines(v, out / v.name, a.name) if a.name
+                     else video_report(v, out / v.name) + story_corrections(out / v.name))
+            for line in lines:
                 print(f"  {line}")
         return
 
@@ -506,7 +551,7 @@ def main() -> None:
         raise SystemExit("\nstopped. Finished stages are cached; rerun the same command to resume.") from None
     print_summary(a.command, show, outcomes, time.monotonic() - start)
     if a.command == "prepare":
-        todo = research_missing(videos, show)
+        todo = research_missing(videos)
         print("\nresearch to write before finish (docs/indexing.md#research):" if todo
               else "\nall research is written; next: finish")
         for line in todo:

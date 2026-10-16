@@ -219,6 +219,11 @@ class NameReportTests(unittest.TestCase):
         self.assertTrue(show.mentioned("Café owner", self.NAMES, show.name_key("The master pours coffee.")),
                         "by an alias")
 
+    def test_possessives_count_as_mentions(self) -> None:
+        shots: list[Any] = [{"characters": [{"name": "Rin Fushiguro", "certain": True}]}]
+        [count] = show.name_report(shots, self.NAMES, "Rin's soul lingers.")
+        self.assertTrue(count["in_synopsis"])
+
     def test_report(self) -> None:
         shots: list[Any] = [
             {"characters": [{"name": "Mira Sato", "certain": True}, {"name": "Bayer", "certain": False}]},
@@ -268,13 +273,29 @@ class CommandTests(ShowTestCase):
         self.assertIn("  warning: the subtitles start 2.0 s late against the dialogue\n"
                       "  prepared 3 shots on 1 contact sheets", printed)
         self.assertNotIn("objc[", printed.split("prepare example:")[1], "library noise stays in the log")
+        self.assertIn("  dialogue from a:0 jpn (aac, default) (1 audio streams), language ja (the audio track's jpn tag)\n"
+                      "  warning: the subtitles start 2.0 s late", printed)
         self.assertIn("research to write before finish (docs/indexing.md#research):\n"
-                      "  cast notes for The Movie: cast/movie.md\n"
-                      "  synopsis of S01E02: synopses/s1e02.md\n"
-                      "  synopsis of Movie: synopses/movie.md", printed)
+                      f"  no synopsis at {self.show_dir}/synopses/s1e02.md\n"
+                      f"  no cast notes at {self.show_dir}/cast/movie.md\n"
+                      f"  no synopsis at {self.show_dir}/synopses/movie.md", printed)
         log = (self.out / "S01E01" / "index.log").read_text()
         self.assertIn("--no-captions", log.splitlines()[1])
         self.assertIn("objc[123]", log, "the log keeps everything")
+
+    def test_research_must_have_entries(self) -> None:
+        (self.show_dir / "cast" / "s1.md").write_text("# Example Show\n\n## Cast\nDRAFT\n")
+        (self.show_dir / "synopses" / "s1e01.md").write_text("\n")
+        _, printed = self.run_show("prepare", "--only", "S01E01")
+        self.assertIn(f"  {self.show_dir}/cast/s1.md has no `### ` entries yet\n"
+                      f"  {self.show_dir}/synopses/s1e01.md is empty", printed)
+        self.assertNotIn("all research is written", printed)
+        code, printed = self.run_show("finish", "--only", "S01E01")
+        self.assertEqual(code, 1)
+        self.assertFalse(any(c["args"] and "--context" in c["args"] for c in self.calls()), "finish doesn't caption")
+        (self.show_dir / "cast" / "s1.md").write_text("# Example Show\n\nno cast section\n")
+        _, printed = self.run_show("prepare", "--only", "S01E01")
+        self.assertIn("has no '## Cast' section", printed)
 
     def test_prepare_reports_missing_files_and_failures(self) -> None:
         (self.media / "example" / "S01E01.en.srt").unlink()
@@ -310,6 +331,20 @@ class CommandTests(ShowTestCase):
         self.assertEqual(code, 0)
         self.assertIn("S01E01  (Season 1)\n  names in the captions of 3 shots", printed)
         self.assertIn("S01E02  (Season 1)\n  no name report:", printed)
+
+        out = self.out / "S01E01"
+        shots = json.loads((out / "shots.json").read_text())
+        for shot in shots:
+            shot.update(start=float(shot["id"]), end=shot["id"] + 1.0, keyframe={"time": 0.0, "file": f"{shot['id']}.jpg"})
+        (out / "shots.json").write_text(json.dumps(shots))
+        (out / "story.json").write_text(json.dumps([{"shots": [
+            {"id": 1, "characters": [{"name": "Mira Sato", "certain": True}]},
+            {"id": 2, "characters": [{"name": "Rin Fushiguro", "certain": False}],
+             "caption_characters": shots[1]["characters"]}]}]))
+        code, printed = self.run_show("report", "--only", "S01E01", "--name", "mira")
+        self.assertEqual(code, 0)
+        self.assertIn(f"S01E01  (Season 1)\n  2 shots name Mira Sato\n    0001 1.0-2.0s Mira Sato  {out}/1.jpg\n"
+                      f"    0002 2.0-3.0s possibly Mira Sato [story: Rin Fushiguro]  {out}/2.jpg", printed)
 
     def test_finish_stops_at_a_failed_index(self) -> None:
         code, printed = self.run_show("finish", "--only", "S01E01", FAKE_FAIL="S01E01")
