@@ -23,6 +23,17 @@ The edit plays the song straight through from the end of the taunt: the drop, ei
 | 16.46–19.18 | Reze (film dialogue, captioned): she calls him a poor naive boy who never learns |
 | 19.35–24.75 | Picture is black; the song rings out under the editor's logo |
 
+### What the editor did to the song
+
+Measured by lining the edit's audio (`media/songs/White Light - Sidewalks and Skeletons (edit).mp3`) up against the original track (`… (full).mp3`) and comparing loudness in low (below 150 Hz), mid and high (above 4 kHz) bands every 0.25 s. Edit time *t* is original time *t* + 29.25 s.
+
+- **No cuts or speed change.** The edit plays the original from 29.25 s to 54.0 s continuously at 1×. The drop at 4.0 s is the song's own drop (33.25 s in the original).
+- **A low tone under the taunt.** In the original the taunt has almost nothing below 150 Hz. The edit has a steady tone around 50 Hz from about 1.2 s, about when Reze snaps her fingers, to the drop. It eases off slightly in the last half second. It's a held tone, not broadband noise. Whether the editor added it or it comes from the film's sound under the snap is unknown.
+- **Louder and denser after the drop.** From 4.0 s the edit averages about 2 dB louder, with about 2 dB less dynamic range (peak to average) and more clipped samples. The bass between kick hits is 5–10 dB louder than in the original, while the kicks themselves are about the same. The hit at 4.0 s is only about 2 dB louder than the original's.
+- **Highs cut under the film lines.** During Denji's line (about 7.0–9.2 s) and Reze's (about 16.3–19.0 s), the music's highs are 10–20 dB below the original while its bass is the same or louder. It's a filter, not a volume duck. The highs come back at 9.25 s, right after Denji's line.
+- **A muffled ring-out.** From 19.3 s, as the picture ends, the highs fall away completely over about 2 s (to 60–70 dB below the original), and the overall level drops 4–8 dB.
+- **Highs otherwise slightly lower.** Outside those stretches the edit's highs sit about 2 dB below the original's.
+
 ## The idea
 
 Reze is the drug: a high that feels like dying, offered as a dare, and Denji takes it.

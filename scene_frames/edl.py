@@ -49,9 +49,14 @@ are errors, so typos never pass silently.
               crossfade: the clip fades in over its first `frames` frames. If the
                 previous clip ends exactly here it keeps playing past its src_out
                 underneath (a handle), otherwise the clip fades in from black.
-  audio     [{source, src_in, src_out, timeline_in, track=0, gain_db=0, duck_db=0,
-              fade_in=0.01, fade_out=0.01, why}]: extra layers, e.g. film dialogue.
-            track is the source's audio stream number. duck_db (<= 0) lowers the song
+  audio     [{source, src_in, src_out, timeline_in, track=0, stem="mix", gain_db=0,
+              duck_db=0, fade_in=0.01, fade_out=0.01, why}]: extra layers, e.g. film dialogue.
+            track is the source's audio stream number. stem "mix" plays that track as it
+            is; "voice" keeps only the voices (lines, breaths, screams) and drops the
+            score and sound effects under them, so a line can sit on the song without the
+            show's music. The voice is separated by a model (separate.py) from the span
+            plus a second of context either side, takes about real time on Apple silicon
+            and is cached in render_cache/. duck_db (<= 0) lowers the song
             while the layer plays, ramping over DUCK_RAMP (0.08) seconds on either side.
             Overlapping layers do not stack their ducks; the deepest one applies.
   overlays  [{source, timeline_in, timeline_out, src_in=0, opacity=1, x=0.5, y=0.5,
@@ -85,6 +90,7 @@ from typing import Literal, Union, cast, get_args, get_origin, get_type_hints
 Sync = Literal["beat", "drop", "word", "phrase_end", "motion", "free"]
 Ease = Literal["linear", "in", "out", "in_out", "hold"]
 SlowMo = Literal["repeat", "blend", "motion"]
+AudioStem = Literal["mix", "voice"]
 
 ANIMATED = ("speed", "zoom", "x", "y", "shake")
 DUCK_RAMP = 0.08
@@ -116,6 +122,7 @@ class AudioLayer:
     src_out: float
     timeline_in: float
     track: int = 0
+    stem: AudioStem = "mix"
     gain_db: float = 0.0
     duck_db: float = 0.0
     fade_in: float = 0.01

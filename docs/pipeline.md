@@ -163,7 +163,25 @@ The EDL is JSON; the full schema is the docstring of `scene_frames/edl.py`. `out
 
 Clip motion uses one mechanism: `keyframes`, each with a time inside the clip, an ease (linear, in, out, in_out or hold) and any of `speed`, `zoom`, `x`, `y` and `shake`. Speed keys make ramps and freezes, and the source span is the speed curve's integral. When `src_out` is omitted it is derived, and when it is given it must match. Zoom and position keys make punch-ins and pans, and `shake` keys set a wobble amplitude that decays when keyed to 0. `slowmo` chooses where slowed footage gets its in-between frames. The default `repeat` holds source frames, while `blend` and `motion` (minterpolate) synthesize new ones. Anime is usually drawn on 2s or 3s (8–12 drawings a second), so synthesized frames can smear line art; that choice is left to the agent.
 
-`audio` layers lift dialogue and can duck the song. `overlays` composite images or video, `captions` support a word or character typewriter reveal, and `ending.fade_to_black` closes the edit. Timeline times snap to output frames, and gaps between clips are black.
+`audio` layers lift dialogue and can duck the song, and `stem: "voice"` strips the show's score and sound effects from a line (see [Voice stems](#voice-stems)). `overlays` composite images or video, `captions` support a word or character typewriter reveal, and `ending.fade_to_black` closes the edit. Timeline times snap to output frames, and gaps between clips are black.
+
+### Voice stems
+
+An audio layer with `"stem": "voice"` plays only the voices in its span: the lines, breaths and screams, without the score and effects mixed under them. Use it when a line plays over the song, where the show's own music clashes with it. The default, `"mix"`, plays the span's soundtrack as it is.
+
+Render separates the span, plus a second either side for context, then cuts the stem back to the span and caches it in `render_cache/` by source file and span. Gain, fades, ducking and placement are applied in the mix, so changing them doesn't separate again. The separator is BS-RoFormer (the ViperX 1297 checkpoint) through the `audio-separator` package, in `scene_frames/separate.py`. The first voice layer downloads the model, about 640 MB, to `~/.cache/animeedits/separator/`. On an M2 Max, an 8 s line takes about 6 s plus a few seconds to load the model. Check a stem by ear: a vocal model keeps sung vocals in a score (insert songs, choirs) as voice.
+
+The model was chosen on known mixes. Each mix is dialogue from a film's centre channel in a scene with almost no score, plus a stretch of the same film's score with no dialogue: *Chainsaw Man – The Movie: Reze Arc* in English and *Jujutsu Kaisen 0* in Japanese, with the score at the dialogue's level and 6 dB under it. "Score left" is the score's energy in the voice stem relative to the mix. "Voice kept" is the dialogue's level in the stem. On the real lines, the RoFormers and BandIt output silence between lines, while CDX23 leaks score there at about −75 dBFS.
+
+| Separator | Score left | Voice kept | SDR | 8 s line, M2 Max |
+|---|---|---|---|---|
+| BS-RoFormer ViperX 1297 (used) | −26 to −38 dB | 0.0 dB | 17–26 dB | 6 s |
+| MelBand RoFormer (Kim) | −27 to −38 dB | 0.0 to −0.2 dB | 16–25 dB | 3 s |
+| HTDemucs ft, vocals | −23 to −34 dB | −0.1 to −0.3 dB | 15–24 dB | 0.5 s (vocals model only) |
+| BandIt v2, DnR v3 multilingual, speech | −23 to −32 dB | −0.1 to −2.1 dB | 6–23 dB | 6 s |
+| CDX23 (Demucs on DnR), dialog | −22 to −31 dB | −0.2 to −3.0 dB | 5–18 dB | 1.5 s |
+
+The two RoFormers are within a dB of each other. BS-RoFormer had the higher SDR on all six mixes, and MelBand kept some faint non-speech sound in one long gap. The dialogue/music/effects (DnR) models leak as much score as HTDemucs and drop up to 3 dB of the Japanese lines, treating shouted or breathy delivery as effects. `audio-separator` 0.47 has no DnR model; CDX23 and BandIt v2 were run from their own checkpoints.
 
 ## Future stages
 Director takes shots.json, song lyrics/beats and an edit move library. Opus chooses the story and writes an edit decision list (EDL) containing source in/out points, timing and effects.

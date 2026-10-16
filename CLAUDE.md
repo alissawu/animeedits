@@ -15,9 +15,11 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 
 ## How to work
 
-How you research, plan and build is up to you. One thing is not: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to and the edit says what you meant it to. Revise until it does.
+How you research, plan and build is up to you. What tends to work is planning from understanding rather than from browsing: knowing the song and the story well enough to say which stretch of the song you'll use, what it feels like, what the edit is about, and which moments it hinges on, then going to the footage to find those moments and discover what you didn't know to look for. It also helps to think through what the viewer goes through against the song: what they expect, where it turns, where it peaks, how it leaves them.
 
-Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (where the song meets the story, the stretch of song, the moment the edit hinges on) and wait for a pick. Otherwise choose the strongest and build it.
+One thing is not up to you: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to. Then watch it as a viewer: what each cut makes you expect and feel, and whether the edit does what you planned. Revise until it does.
+
+Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (the stretch of song and what it feels like, what the edit is about, the moments it hinges on, what the viewer goes through) and wait for a pick. Otherwise choose the strongest and build it.
 
 Research the show and the song as deeply as the edit needs, and keep researching while you plan: when a question comes up, search for it yourself or send another agent. Subagents work well for this, but they report back in summary, so ask them for the specifics you need (scenes, timestamps, lines, what fans say), not just conclusions. The show's cast notes and episode synopses are already in `shows/<show>/`; your research is what's specific to this edit, in `out/<edit-name>/`.
 
@@ -64,7 +66,7 @@ Things you can't see from the code:
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
   - the render
-  - a short `notes.md` with the concept you went with and what you'd change next time
+  - a short `notes.md` with the concept you went with, the moments you planned and which of them you found in the footage, and what you'd change next time
 
 ## Code
 
