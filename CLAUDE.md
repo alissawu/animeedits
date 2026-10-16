@@ -4,14 +4,14 @@ A harness for seeing how well a model can make short (15–40 s) TikTok-style an
 
 ## The bar
 
-Read [breakdowns/denreze-white-light.md](breakdowns/denreze-white-light.md) before planning. It takes apart an edit the user loves: what the song is about, which scenes the editor picked, and what those scenes mean in the story. It shows the level of thought the user responds to. It isn't a structure to follow; your edit should come from what this song and this story are about.
+Read [breakdowns/denreze-white-light.md](breakdowns/denreze-white-light.md) before planning. It takes apart an edit the user loves: what the song is about, which scenes the editor picked, and what those scenes mean in the story. It shows the level of thought the user responds to. It isn't a structure to follow; your edit should come from what this song and these characters are about.
 
 What the user responds to:
-- **One idea where the song meets the story**, with the edit built around it.
+- **One story your edit tells about the characters**, where the song meets the show, with the edit built around it.
 - **Something true about the characters** that a fan would recognize, and ideally notice more of on a rewatch.
 - **Craft that serves the idea:** timing, flow and look.
 
-You'll be judged on whether it moves the user, whether it means something, whether it's well made, and whether it surprises. Clean but empty loses to rough but meaningful.
+You'll be judged on whether it moves the user, whether it means something, whether it's well made, and whether it surprises.
 
 ## How to work
 

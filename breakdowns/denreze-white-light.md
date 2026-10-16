@@ -5,11 +5,21 @@
 - **File:** `denreze-whitelight.mov`. It runs 24.75 s at 1024×576 and 20 fps. The picture is 19.35 s and 19 shots; the rest is black with the editor's logo while the song rings out. About 123 BPM, with the drop at 4.0 s.
 - Times are measured with `analyze_edit.py`. Lyrics and dialogue are paraphrased; the time-synced lyrics are on [LRCLIB](https://lrclib.net/api/search?artist_name=Sidewalks%20and%20Skeletons&track_name=White%20Light).
 
-What follows is why this edit works as a piece about these two: what the song says, what each shot means in the story, and why it sits where it does. Most of it is the story knowledge behind each choice, because that is where the edit's meaning comes from. It's one reading of one edit, not a structure to follow.
+What follows takes the edit apart in the order the thinking behind it goes: what's true about these two, what the song feels like, where the two meet (the story the edit tells), how the song's parts tell it, the moments that carry each part, and how it's cut. Most of the detail is knowledge of the film (its plot, its characters, what fans feel about them), because that is what lets each moment carry its part of the edit's story for a fan. It's one reading of one edit, not a structure to follow.
+
+## What's true about them
+
+Reze is a Soviet assassin and a Bomb Devil hybrid, sent to get close to Denji and take his heart. She is the first girl who seems to want him rather than what he can do, and the wanting is the mission. Denji's dream is to be a normal boy with a normal girl, and up to the festival he is living it.
+
+At the festival she kisses him as the fireworks go off, and mid-kiss she bites off his tongue. That is how her attack starts. She nearly kills him, and the morning after he still asks her to run away with him. After cutting him down she had kissed him again and apologized, which is why fans argue the feeling was real. At the end she lets her train go and turns back for the café, and dies before she gets there. He waits for her with a bouquet, and she never arrives.
+
+The creator of the manga has said that love and explosions are alike: both are over in an instant and leave nothing behind.
 
 ## The song
 
 "White Light" (2015) opens with a spoken skit. A woman talks a hesitant girl into trying a new drug called White Light, which supposedly makes you feel like you died and came back. When the girl wavers, the woman taunts her: is she scared of a little danger? Then the beat drops, and a chopped hook about burning out follows. Later the song goes inside the high: it's electric, every time feels like the first, there's a flash of panic, then reassurance.
+
+In the user's words, it's about trying a new substance for the first time: it's a rush, it's scary, it's breathtaking.
 
 The edit plays the song straight through from the end of the taunt: the drop, eight seconds of beat, then the hook coming in. Two film lines are laid over it.
 
@@ -36,35 +46,31 @@ Measured by lining the edit's audio (`media/songs/White Light - Sidewalks and Sk
 
 The renderer can make changes like these: song keyframes for volume, bass, compression and low-pass, and `muffle_hz` on a dialogue layer. See [Shaping the song](../docs/pipeline.md#shaping-the-song).
 
-## The idea
+## The edit's story
 
-Reze is the drug: a high that feels like dying, offered as a dare, and Denji takes it.
+**What hits the user** is the expectation flipping. You're braced for carnage and get them falling for each other, like stepping on a mine in a minefield and finding out it was a carrot. It also lands because of what the kiss is in the film: the last moment of the ordinary romance. Up to the festival Denji has been living his dream of being a normal boy with a normal girl. Seconds later she bites his tongue and he's back to fighting for his life. For one moment, he was just a boy in love.
 
-That comes straight from the story. Reze is a Soviet assassin and a Bomb Devil hybrid, sent to get close to Denji and take his heart. She is the first girl who seems to want him rather than what he can do, and the wanting is the mission. At the festival she kisses him as the fireworks go off, and mid-kiss she bites off his tongue. That is how her attack starts. She nearly kills him, and the morning after he still asks her to run away with him.
+That is where the song and the film meet. In the user's words, the film's first love is dangerous but breathtaking, and the song is the rush of trying something for the first time. For these two the kiss *is* the danger.
 
-The story even asks him the dare outright. After the pool, Reze tells him the fable of the country mouse and the city mouse: a safe, dull life or a rich, dangerous one. Denji picks the city mouse because the food is better and it's more fun. The song's taunt is a question he already answered.
+One reading the edit supports: Reze is the drug, a high that feels like dying, offered as a dare, and Denji takes it. The film even asks him the dare outright. After the pool, Reze tells him the fable of the country mouse and the city mouse: a safe, dull life or a rich, dangerous one. Denji picks the city mouse because the food is better and it's more fun. The song's taunt is a question he already answered.
 
-So when the drop hits and the picture gives you the kiss, it's more than a bait-and-switch. For these two the kiss *is* the danger. The creator of the manga has said that love and explosions are alike: both are over in an instant and leave nothing behind.
+The edit also runs the film backwards. In the film the kiss turns into violence. Here violence turns into the kiss: she snaps her fingers to set off her bombs, the sparks rise over the city, and what goes off is the fireworks. That gives them back the one moment before the betrayal.
 
-The edit also runs the story backwards. In the film the kiss turns into violence. Here violence turns into the kiss: she snaps her fingers to set off her bombs, the sparks rise over the city, and what goes off is the fireworks. That gives them back the one moment before the betrayal.
+## How the song's parts tell it
 
-**What hits the user** is the expectation flipping. You're braced for carnage and get them falling for each other, like stepping on a mine in a minefield and finding out it was a carrot. It also lands because of what the kiss is in the story: the last moment of the ordinary romance. Up to the festival Denji has been living his dream of being a normal boy with a normal girl. Seconds later she bites his tongue and he's back to fighting for his life. For one moment, he was just a boy in love.
+Each part opens with what it does for the edit's story, then the moments that carry it. Numbers match the shot table at the end.
 
-## The picks, in order
-
-Numbers match the shot table at the end.
-
-### Under the dare (0–4.1)
+### Under the dare (0–4.1): the dare, asked over the danger itself
 
 - **1–2. Reze snaps her fingers upward, and her bombs' sparks rise over the night city.** It's one continuous stretch of the film, from near the end, not the start. The edit opens in the war, with Reze as the bomb. Nothing here is fireworks yet. The switch happens at the cut to the kiss, where sparks rising over a night city become fireworks bursting behind them. The director picked the most beautiful part of the orange range for the film's explosions, so the two match.
 
 The taunt asks whether you're scared of danger while the picture shows the danger itself. The last word ends at 3.92, a white flash hits the drop, and the kiss comes in.
 
-### The drop (4.1–6.95)
+### The drop (4.1–6.95): the dare is answered with the kiss, not the blast
 
-- **4. The fireworks kiss, held for 2.85 s.** It's the longest shot in the edit, held through the loudest stretch while everything around it cuts faster. Just before it, on the hill above the festival, Reze asks him to quit and run away with her and says she likes him. He's tempted but says no: he has a job and people he cares about now. She kisses him as the fireworks go off, and mid-kiss bites off his tongue. After cutting him down she kisses him again and apologizes, which is why fans argue the feeling was real. So the shot gets the most time: it's the love story and the attack at once, and the last moment before everything turns. Fans know what happens a second later, so the edit never shows the bite.
+- **4. The fireworks kiss, held for 2.85 s.** It's the longest shot in the edit, held through the loudest stretch while everything around it cuts faster. Just before it, on the hill above the festival, Reze asks him to quit and run away with her and says she likes him. He's tempted but says no: he has a job and people he cares about now. So the shot gets the most time: it's the love story and the attack at once, and the last moment before everything turns. Fans know what happens a second later, so the edit never shows the bite.
 
-### Denji's line (6.95–9.55)
+### Denji's line (6.95–9.55): he still likes her, while she tries to kill him
 
 The line is lifted out of the beach scene the morning after the fight and laid over two kinds of footage:
 
@@ -73,7 +79,7 @@ The line is lifted out of the beach scene the morning after the fight and laid o
 
 The line ends, the picture dips to black, and then:
 
-### The beat and the hook (9.55–16.3)
+### The beat and the hook (9.55–16.3): tender and violent on every cut, until the hook burns it out
 
 - **8. Reze in the school pool at night, from behind.** He admits he can't swim, and she teaches him. It's the film's showpiece scene, expanded from the manga.
   - The nudity in Chainsaw Man is usually Denji's crude dream. Here it plays as his coming of age, tender rather than leering, and her back is the most carefully drawn body in the scene.
@@ -82,7 +88,7 @@ The line ends, the picture dips to black, and then:
 - **9–11. Her hands three times, on the beat.** First reaching up to the sky as the rain starts at the pool, then reaching forward in battle, then held against falling fireballs. The same hands, tender and then violent.
 - **12. A cross-dissolve, the edit's only soft transition, into her silhouette against a burning sky.** The hook about burning out comes in right here, over her standing in the fire.
 - **14. She pulls the pin on her choker.** The choker is the one accessory she always wears. It hides the grenade pin she pulls to turn into the Bomb Devil.
-- **15–16. The blast, then her smiling in the café, 0.2 s later.** The café, Crossroads, is where she works and where she invited him the night they met. At the end of the story it's where he waits for her with a bouquet, and she never arrives. The edit puts the detonator and the girl he fell for back to back. With the hook still going, the café smile is the thing burning out.
+- **15–16. The blast, then her smiling in the café, 0.2 s later.** The café, Crossroads, is where she works and where she invited him the night they met. At the end of the film it's where he waits for her with a bouquet, and she never arrives. The edit puts the detonator and the girl he fell for back to back. With the hook still going, the café smile is the thing burning out.
 - **17. The flower handoff, with Makima's ringed eye composited behind it, for 5 frames.** This is the only image the editor made, and it takes the most knowledge to read:
   - Makima tells Denji he has a heart.
   - Moved by that, he gives money at a charity stand, gets a flower and eats it.
@@ -93,7 +99,7 @@ The line ends, the picture dips to black, and then:
   The flower comes from Makima at the start, and Makima ends it. Her eye isn't in that scene in the film. Putting it behind the handoff says she was watching all along, and at 5 frames it plays like a thought the viewer can't push away. The composite is hand-animated across two frames: the joined hands and the flower shift slightly, so it doesn't read as a still. You'd only notice the motion going frame by frame.
 - **18. Aki, glancing sideways.** He's the one who yelled at Denji not to fall for her when she claimed her feelings were real.
 
-### Reze's line (16.3–19.35)
+### Reze's line (16.3–19.35): her parting words, that he'll never learn
 
 - **19. Chainsaw Man vs. Bomb.** The final fight, as her line begins.
 - **20. Two small figures by the sea, on the word that calls him a boy.** The beach the morning after. She told him she never liked him and it was all training; he said he liked her anyway, because she taught him to swim. Then she hugged him, broke his neck and left. Both lines in the edit come from this scene: his is what he says there, and hers is her parting words as she leaves him. So the edit's split conversation ends where it actually happened.
@@ -105,7 +111,7 @@ The picture cuts to black right after her last word, and the caption stays a mom
 
 ## What it leaves to the fan
 
-The tongue bite, the drowning, the alley and the empty café are all missing, and Makima appears only as an eye. The edit isn't in story order either. It works in 19 seconds because it's made for people who've seen the film: each shot only has to point at a scene, and the viewer brings the rest. That's how five frames can carry the whole ending.
+The tongue bite, the drowning, the alley and the empty café are all missing, and Makima appears only as an eye. The edit isn't in the film's order either. It works in 19 seconds because it's made for people who've seen the film: each shot only has to point at a scene, and the viewer brings the rest. That's how five frames can carry the whole ending.
 
 ## How it's cut
 
@@ -140,7 +146,7 @@ The cutting follows the song. It's slow under the dare, holds through the drop, 
 
 ## Sources and open questions
 
-- Story facts come from the Chainsaw Man Fandom wiki: chapters [39](https://chainsaw-man.fandom.com/wiki/Chapter_39) to [52](https://chainsaw-man.fandom.com/wiki/Chapter_52), especially [40](https://chainsaw-man.fandom.com/wiki/Chapter_40), [42](https://chainsaw-man.fandom.com/wiki/Chapter_42), [44](https://chainsaw-man.fandom.com/wiki/Chapter_44) and [51](https://chainsaw-man.fandom.com/wiki/Chapter_51), and [Reze/History](https://chainsaw-man.fandom.com/wiki/Reze/History). Also [the film's Wikipedia plot](https://en.wikipedia.org/wiki/Chainsaw_Man_%E2%80%93_The_Movie:_Reze_Arc).
+- Facts about the film come from the Chainsaw Man Fandom wiki: chapters [39](https://chainsaw-man.fandom.com/wiki/Chapter_39) to [52](https://chainsaw-man.fandom.com/wiki/Chapter_52), especially [40](https://chainsaw-man.fandom.com/wiki/Chapter_40), [42](https://chainsaw-man.fandom.com/wiki/Chapter_42), [44](https://chainsaw-man.fandom.com/wiki/Chapter_44) and [51](https://chainsaw-man.fandom.com/wiki/Chapter_51), and [Reze/History](https://chainsaw-man.fandom.com/wiki/Reze/History). Also [the film's Wikipedia plot](https://en.wikipedia.org/wiki/Chainsaw_Man_%E2%80%93_The_Movie:_Reze_Arc).
 - The film's flowers are gerberas, white at the first meeting and red at the end ([Sakuga Blog](https://blog.sakugabooru.com/2026/01/06/chainsaw-man-reze-the-movie-of-the-moment/)). The film expands the pool scene ([CBR](https://www.cbr.com/chainsaw-man-movie-manga-changes-additions/)).
 - The director on explosion colors: [MANTANWEB](https://mantan-web.jp/article/20250919dog00m200003000c.html). The creator on love and explosions: [All About](https://news.allabout.co.jp/articles/o/101798/).
 - Song: [Bandcamp](https://sidewalksandskeletons.bandcamp.com/track/white-light), the title track of the album *WHITE LIGHT*. Structure and timings are from LRCLIB.
