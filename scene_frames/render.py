@@ -1,16 +1,17 @@
 """Render an edit decision list to a frame-accurate MP4.
 
-usage: python render.py EDL.json OUT.mp4 [--check] [--jobs N] [--crf N] [--preset P] [--verbose]
+usage: python render.py EDL.json OUT.mp4|OUT.wav [--check] [--jobs N] [--crf N] [--preset P] [--verbose]
 
 Each clip is normalized (seek, speed, reverse, crop, color) into a cached segment of
 exactly its frame count, and each audio layer with stem "voice" into a cached voice stem.
 One ffmpeg filtergraph then lays the segments end to end and composites crossfades,
 overlays, flashes, captions, the ending fade and the audio mix. Writes OUT.mp4, proof.jpg
 and edl_table.md, and keeps segments and stems in render_cache/ next to OUT.mp4 so
-re-renders only redo changed clips and lines. The schema is documented in edl.py.
+re-renders only redo changed clips and lines. OUT.wav renders the audio mix alone, with
+edl_table.md, for quick listening while shaping the song. The schema is documented in edl.py.
 """
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 from dataclasses import dataclass
@@ -28,8 +29,11 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from edl import (DUCK_RAMP, Caption, Clip, Color, Edl, EdlError, Output, clip_frames, crossfade_handle, load_edl,
-                 output_frames, reveal_frames, source_end, source_offset, span_frames, speed_range, to_frame, track)
+from edl import (DUCK_RAMP, ECHO_DELAY, ECHO_FEEDBACK, JOIN, OPEN_HIGHPASS, OPEN_LOWPASS, REVERB_DECAY, TAIL_FADE,
+                 Caption, Clip, Color, Edl, EdlError, Output, Tail, check_layer_span, clip_frames, crossfade_handle,
+                 join_seconds, layer_end, layer_times, load_edl, output_frames, reveal_frames, song_gain_db,
+                 song_highpass, song_lowpass, song_pieces, song_window, source_end, source_offset, span_frames,
+                 speed_range, to_frame, track)
 import separate
 from separate import SeparationError, VoiceSeparator
 
@@ -155,8 +159,12 @@ def check_sources(edl: Edl, edl_dir: Path) -> tuple[dict[Path, Probe], list[str]
     if song is not None:
         if song.audio_streams == 0:
             problems.append(f"song.source: {edl.song.source} has no audio stream")
-        if note := overrun(song, edl.song.src_out, edl.song.source):
-            problems.append(f"song.src_out: {note}")
+        for k, piece in enumerate(song_pieces(edl.song)):
+            # A crossfade out of the piece plays half its length past src_out.
+            handle = join_seconds(edl.song, k + 1) / 2 * edl.song.speed
+            if note := overrun(song, piece.src_out + handle, edl.song.source):
+                extra = f" (with the {join_seconds(edl.song, k + 1):g} s crossfade out of it)" if handle else ""
+                problems.append(f"{f'song.pieces[{k}]' if edl.song.pieces else 'song'}.src_out: {note}{extra}")
 
     for i, clip in enumerate(edl.clips):
         path = f"clips[{i}]"
@@ -182,8 +190,10 @@ def check_sources(edl: Edl, edl_dir: Path) -> tuple[dict[Path, Probe], list[str]
             continue
         if layer.track >= pr.audio_streams:
             problems.append(f"{path}.track: {layer.source} has {pr.audio_streams} audio stream(s), got track {layer.track}")
-        if note := overrun(pr, layer.src_out, layer.source):
+        if layer.src_out is not None and (note := overrun(pr, layer.src_out, layer.source)):
             problems.append(f"{path}.src_out: {note}")
+        elif layer.src_out is None and pr.duration is not None and layer.src_in >= pr.duration:
+            problems.append(f"{path}.src_in: {layer.src_in:.3f} s is past the end of {layer.source} ({pr.duration:.3f} s)")
 
     for i, overlay in enumerate(edl.overlays):
         path = f"overlays[{i}]"
@@ -202,6 +212,27 @@ def check_sources(edl: Edl, edl_dir: Path) -> tuple[dict[Path, Probe], list[str]
         except OSError:
             problems.append(f"captions[{i}].style.font: cannot load {caption.style.font!r}")
     return probes, problems
+
+
+def resolve_layers(edl: Edl, edl_dir: Path, probes: dict[Path, Probe]) -> tuple[Edl, list[str]]:
+    """The EDL with every audio layer's src_out filled in (the end of its file when not given), and the
+    problems with where the filled-in layers play. Run after check_sources found no problems."""
+    layers = list(edl.audio)
+    filled = []
+    problems: list[str] = []
+    for i, layer in enumerate(layers):
+        if layer.src_out is not None:
+            continue
+        duration = probes[resolve(edl_dir, layer.source)].duration
+        if duration is None:
+            problems.append(f"audio[{i}].src_out: the length of {layer.source} is unknown; give src_out")
+            continue
+        layers[i] = dataclasses.replace(layer, src_out=duration)
+        filled.append(i)
+    resolved = dataclasses.replace(edl, audio=tuple(layers))
+    for i in filled:
+        problems += check_layer_span(resolved, i)
+    return resolved, problems
 
 
 # ---- picture segments ----
@@ -548,7 +579,7 @@ def plan_stems(edl: Edl, edl_dir: Path, probes: dict[Path, Probe]) -> dict[int, 
     for k, layer in enumerate(edl.audio):
         if layer.stem == "voice":
             file = resolve(edl_dir, layer.source)
-            stems[k] = Stem(file, probes[file], layer.track, layer.src_in, layer.src_out)
+            stems[k] = Stem(file, probes[file], layer.track, layer.src_in, layer_end(layer))
     return stems
 
 
@@ -586,6 +617,193 @@ def render_stem(stem: Stem, separator: VoiceSeparator, file: Path, verbose: bool
     partial.replace(file)
 
 
+# ---- song ----
+
+BLOCK = 256  # samples per audio frame where the song's gain and filters can change (5.3 ms)
+ECHO_FLOOR = 3e-5  # echo repeats quieter than this (-90 dB) are dropped
+
+
+def butterworth_q(slope: int) -> tuple[float, ...]:
+    """Qs of the cascaded biquads that make a Butterworth filter falling `slope` dB per octave (12 per biquad)."""
+    order = slope // 6
+    return tuple(1 / (2 * math.cos((2 * k - 1) * math.pi / (2 * order))) for k in range(1, order // 2 + 1))
+
+
+def filter_arg(text: str) -> str:
+    """`text` quoted as one filter option value inside a filtergraph."""
+    quoted = "'" + text.replace("'", "'\\''") + "'"
+    return "".join("\\" + c if c in "\\'[],;" else c for c in quoted)
+
+
+def song_controls(edl: Edl) -> tuple[bool, bool, bool]:
+    """Whether the song's gain, low-pass and high-pass change over time."""
+    song = edl.song
+    return (bool(track(song, "gain_db")),
+            bool(track(song, "lowpass")) or any(layer.muffle_hz is not None for layer in edl.audio),
+            bool(track(song, "highpass")))
+
+
+def control_values(edl: Edl, t: float) -> dict[str, tuple[float, int]]:
+    """(value, on) of each song control in use at output time `t`, by filter name: the linear gain, and each
+    filter's cutoff, switched off (0) at its open cutoff."""
+    gain, lowpass, highpass = song_controls(edl)
+    values: dict[str, tuple[float, int]] = {}
+    if gain:
+        values["volume"] = (10 ** (song_gain_db(edl.song, t) / 20), 1)
+    if lowpass:
+        cutoff = song_lowpass(edl, t)
+        values["lowpass"] = (cutoff, int(cutoff < OPEN_LOWPASS * (1 - 1e-9)))
+    if highpass:
+        cutoff = song_highpass(edl.song, t)
+        values["highpass"] = (cutoff, int(cutoff > OPEN_HIGHPASS * (1 + 1e-9)))
+    return values
+
+
+def song_command_text(edl: Edl) -> str | None:
+    """asendcmd commands that move the song's gain and filters, one block at a time; None when nothing moves.
+
+    Values are taken at the middle of each BLOCK-sample frame and sent only when they change, so a value
+    changes at the start of the block nearest its time. A filter at its open cutoff is switched off (mix 0)
+    and keeps running underneath, so switching it back on is smooth.
+    """
+    if not any(song_controls(edl)):
+        return None
+    stages = len(butterworth_q(edl.song.filter_slope))
+    samples = round(output_frames(edl) * SAMPLE_RATE / edl.output.fps)
+    last = control_values(edl, BLOCK / 2 / SAMPLE_RATE)
+    lines = []
+    for k in range(1, samples // BLOCK + 1):
+        commands = []
+        for name, (value, on) in control_values(edl, (k * BLOCK + BLOCK / 2) / SAMPLE_RATE).items():
+            before, was_on = last[name]
+            if abs(value - before) <= 1e-4 * before and on == was_on:
+                continue
+            last[name] = (value, on)
+            if name == "volume":
+                commands.append(f"volume@song_gain volume {value:.6f}")
+            else:
+                for stage in range(stages):
+                    commands += [f"{name}@song_{name}{stage} frequency {value:.3f}", f"{name}@song_{name}{stage} mix {on}"]
+        if commands:  # just before the block starts, so float rounding cannot push it a block late
+            lines.append(f"{k * BLOCK / SAMPLE_RATE - 1e-7:.7f} {', '.join(commands)};")
+    return "\n".join(lines) + "\n" if lines else None
+
+
+def song_control_filters(edl: Edl, commands: Path | None) -> list[str]:
+    """The song's gain and filters, set to their values at the start of the output and driven by the
+    `commands` file of song_command_text when they move."""
+    filters = [f"asetnsamples=n={BLOCK}:p=0"]
+    if commands is not None:
+        filters.append(f"asendcmd=f={filter_arg(str(commands))}")
+    for name, (value, on) in control_values(edl, BLOCK / 2 / SAMPLE_RATE).items():
+        if name == "volume":
+            filters.append(f"volume@song_gain=volume={value:.6f}:eval=once")
+        else:
+            filters += [f"{name}@song_{name}{stage}=f={value:.3f}:width_type=q:width={q:.4f}:mix={on}"
+                        for stage, q in enumerate(butterworth_q(edl.song.filter_slope))]
+    return filters
+
+
+def echo_filter(tail: Tail) -> str:
+    """aecho of only the repeats: one every delay seconds, each feedback times the last, through the tail."""
+    delay = ECHO_DELAY if tail.delay is None else tail.delay
+    feedback = ECHO_FEEDBACK if tail.feedback is None else tail.feedback
+    delays, decays = [], []
+    k = 1
+    while k * delay <= tail.input + tail.seconds and feedback ** (k - 1) >= ECHO_FLOOR:
+        delays.append(f"{k * delay * 1000:.3f}")
+        decays.append(f"{feedback ** (k - 1):.6f}")
+        k += 1
+    return f"aecho=in_gain=0:out_gain=1:delays={'|'.join(delays)}:decays={'|'.join(decays)}"
+
+
+def reverb_response(tail: Tail) -> np.ndarray:
+    """Stereo impulse response of the reverb tail: decorrelated noise falling 60 dB over `decay` seconds,
+    each channel scaled to unit energy so the reverb is about as loud as what goes in."""
+    decay = REVERB_DECAY if tail.decay is None else tail.decay
+    length = round(min(decay, tail.input + tail.seconds) * SAMPLE_RATE)
+    t = np.arange(length) / SAMPLE_RATE
+    noise = np.random.default_rng(0).standard_normal((2, length)) * np.exp(-math.log(1000) * t / decay)
+    return noise / np.sqrt((noise ** 2).sum(axis=1, keepdims=True))
+
+
+def write_wav(samples: np.ndarray, file: Path, what: str, verbose: bool) -> None:
+    """Write (channels, n) float samples at SAMPLE_RATE as a float WAV."""
+    run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "f32le", "-ar", str(SAMPLE_RATE),
+         "-ac", str(samples.shape[0]), "-i", "-", "-c:a", "pcm_f32le", str(file)], what, verbose,
+        data=np.ascontiguousarray(samples.T, dtype="<f4").tobytes())
+
+
+def song_chains(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], add: Callable[..., int], stereo: str,
+                commands: Path | None, reverb_ir: Path | None) -> list[str]:
+    """Filter chains from the song's source to [song]: pieces, speed, gain, fades, tail, keyframes and ducks."""
+    out, song = edl.output, edl.song
+    fps, total = out.fps, output_frames(edl)
+    samples = round(total * SAMPLE_RATE / fps)
+    file = resolve(edl_dir, song.source)
+    chains: list[str] = []
+    if not song.pieces:
+        window = song_pieces(song)[0]
+        spec, trim = audio_source(file, probes[file], window.src_in, window.src_out)
+        head = f"[{add(*spec)}:a:0]"
+        filters = [trim, stereo]
+    else:
+        for k, piece in enumerate(song.pieces):
+            before = join_seconds(song, k) / 2 * song.speed
+            after = join_seconds(song, k + 1) / 2 * song.speed
+            spec, trim = audio_source(file, probes[file], piece.src_in - before, piece.src_out + after)
+            chains.append(f"[{add(*spec)}:a:0]{trim},{stereo}[piece{k}]")
+        joined = "[piece0]"
+        for k in range(1, len(song.pieces)):
+            overlap = round(join_seconds(song, k) * song.speed * SAMPLE_RATE)
+            join = (f"acrossfade=ns={overlap}:c1=tri:c2=tri" if overlap else "concat=n=2:v=0:a=1")
+            chains.append(f"{joined}[piece{k}]{join}[joined{k}]")
+            joined = f"[joined{k}]"
+        head, filters = joined, ["asetpts=N/SR/TB"]
+    if song.speed != 1:
+        filters += [f"asetrate={round(SAMPLE_RATE * song.speed)}", f"aresample={SAMPLE_RATE}", "asetpts=N/SR/TB"]
+    if song.gain_db:
+        filters.append(f"volume={song.gain_db!r}dB")
+    if song.fade_in:
+        filters.append(f"afade=t=in:st=0:d={song.fade_in!r}")
+    end = total / fps if song.tail is None else song_window(song)  # where the song itself stops
+    if song.fade_out:
+        filters.append(f"afade=t=out:st={end - song.fade_out:.6f}:d={song.fade_out!r}")
+    tail = song.tail
+    if tail is not None:
+        # The song stops at its end; its last `input` seconds, delayed back into place, feed the effect.
+        filters += [f"afade=t=out:st={end - JOIN:.6f}:d={JOIN}", "asplit[dry][send]"]
+        chains.append(f"{head}{','.join(filters)}")
+        start = round((end - tail.input) * SAMPLE_RATE)
+        length = round((tail.input + tail.seconds) * SAMPLE_RATE)
+        send = [f"atrim=start_sample={start}", "asetpts=N/SR/TB", f"afade=t=in:d={JOIN}", f"apad=whole_len={length}"]
+        if tail.type == "echo":
+            chains.append(f"[send]{','.join(send)},{echo_filter(tail)}[wet]")
+        else:
+            if reverb_ir is None:
+                raise ValueError("a reverb tail needs its impulse response file")
+            ir = add("-i", str(reverb_ir))
+            chains.append(f"[send]{','.join(send)}[sent]")
+            chains.append(f"[sent][{ir}:a:0]afir=gtype=none:irnorm=-1:irgain=1[wet]")
+        fade = tail.seconds * TAIL_FADE
+        chains.append(f"[wet]volume={tail.wet_db!r}dB,atrim=end_sample={length},adelay=delays={start}S:all=1[delayed]")
+        head = "[dry][delayed]"
+        # amix stamps no times on what it outputs after the song ends; afade and asendcmd need them.
+        filters = ["amix=inputs=2:normalize=0:duration=longest", "asetpts=N/SR/TB",
+                   f"afade=t=out:st={total / fps - fade:.6f}:d={fade:.6f}"]
+    controlled = any(song_controls(edl))
+    if controlled:
+        filters += song_control_filters(edl, commands)
+    duck = duck_expression(edl)
+    if duck:
+        if not controlled:
+            filters.append(f"asetnsamples=n={BLOCK}:p=0")
+        filters.append(f"volume='{duck}':eval=frame")
+    filters += [f"apad=whole_len={samples}", f"atrim=end_sample={samples}"]
+    chains.append(f"{head}{','.join(filters)}[song]")
+    return chains
+
+
 # ---- composite ----
 
 def window(start: int, end: int, fps: int) -> str:
@@ -610,8 +828,7 @@ def duck_expression(edl: Edl) -> str | None:
     terms = []
     for layer in edl.audio:
         if layer.duck_db < 0:
-            start = to_frame(layer.timeline_in, fps) / fps
-            end = start + layer.src_out - layer.src_in
+            start, end = layer_times(layer, fps)
             depth = 1 - 10 ** (layer.duck_db / 20)
             terms.append(f"(1-{depth:.6f}*clip(min((t-{start - r:.6f})/{r},({end + r:.6f}-t)/{r}),0,1))")
     if not terms:
@@ -622,13 +839,67 @@ def duck_expression(edl: Edl) -> str | None:
     return expr
 
 
+def mix_chains(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], add: Callable[..., int], stems: dict[int, Path],
+               song_commands: Path | None, reverb_ir: Path | None) -> list[str]:
+    """Filter chains from the song and the audio layers to the limited mix, [aout]."""
+    fps = edl.output.fps
+    samples = round(output_frames(edl) * SAMPLE_RATE / fps)
+    stereo = f"aresample={SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB"
+    chains = song_chains(edl, edl_dir, probes, add, stereo, song_commands, reverb_ir)
+
+    mix = ["[song]"]
+    for k, audio in enumerate(edl.audio):
+        if k in stems:  # already cut to the span
+            spec, trim, stream = ["-i", str(stems[k])], "asetpts=PTS-STARTPTS", 0
+        else:
+            source = resolve(edl_dir, audio.source)
+            spec, trim = audio_source(source, probes[source], audio.src_in, layer_end(audio))
+            stream = audio.track
+        length = layer_end(audio) - audio.src_in
+        filters = [trim, stereo]
+        if audio.gain_db:
+            filters.append(f"volume={audio.gain_db!r}dB")
+        if audio.fade_in:
+            filters.append(f"afade=t=in:st=0:d={audio.fade_in!r}")
+        if audio.fade_out:
+            filters.append(f"afade=t=out:st={length - audio.fade_out:.6f}:d={audio.fade_out!r}")
+        delay = round(to_frame(audio.timeline_in, fps) * SAMPLE_RATE / fps)
+        filters.append(f"adelay=delays={delay}S:all=1")
+        chains.append(f"[{add(*spec)}:a:{stream}]{','.join(filters)}[a{k}]")
+        mix.append(f"[a{k}]")
+    master = "[song]"
+    if len(mix) > 1:
+        chains.append(f"{''.join(mix)}amix=inputs={len(mix)}:normalize=0:duration=first[mix]")
+        master = "[mix]"
+    chains.append(f"{master}alimiter=limit={LIMIT}:level=0:latency=1,"
+                  f"apad=whole_len={samples},atrim=end_sample={samples}[aout]")
+
+    return chains
+
+
+def audio_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], stems: dict[int, Path], file: Path,
+                  song_commands: Path | None = None, reverb_ir: Path | None = None) -> list[str]:
+    """ffmpeg command for the mix alone, as a 24-bit WAV."""
+    args: list[str] = []
+    inputs = itertools.count()
+
+    def add(*spec: str) -> int:
+        args.extend(spec)
+        return next(inputs)
+
+    chains = mix_chains(edl, edl_dir, probes, add, stems, song_commands, reverb_ir)
+    return ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", *args, "-filter_complex", ";".join(chains),
+            "-map", "[aout]", "-c:a", "pcm_s24le", "-ar", str(SAMPLE_RATE), "-f", "wav", str(file)]
+
+
 def composite_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], picture_list: Path,
                       handles: dict[int, Path], stems: dict[int, Path], captions: tuple[Path, str] | None,
-                      file: Path, crf: int, preset: str) -> list[str]:
-    """The final ffmpeg command. handles are crossfade handles by clip index, stems voice WAVs by audio layer."""
+                      file: Path, crf: int, preset: str, song_commands: Path | None = None,
+                      reverb_ir: Path | None = None) -> list[str]:
+    """The final ffmpeg command. handles are crossfade handles by clip index, stems voice WAVs by audio layer;
+    song_commands is the file of song_command_text and reverb_ir the impulse response of a reverb tail."""
     out = edl.output
     fps, total = out.fps, output_frames(edl)
-    samples = round(total * SAMPLE_RATE / fps)
     args: list[str] = []
     chains: list[str] = []
     inputs = itertools.count()
@@ -698,51 +969,7 @@ def composite_command(edl: Edl, edl_dir: Path, probes: dict[Path, Probe], pictur
         layer(f"fade=t=out:st={(total - fade - 1) / fps:.6f}:d={fade / fps:.6f}")
     chains.append(f"[{cur}]format=yuv420p,{TAG_BT709}[vout]")
 
-    stereo = f"aresample={SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB"
-    song = edl.song
-    song_file = resolve(edl_dir, song.source)
-    spec, trim = audio_source(song_file, probes[song_file], song.src_in, song.src_out)
-    filters = [trim, stereo]
-    if song.speed != 1:
-        filters += [f"asetrate={round(SAMPLE_RATE * song.speed)}", f"aresample={SAMPLE_RATE}", "asetpts=N/SR/TB"]
-    if song.gain_db:
-        filters.append(f"volume={song.gain_db!r}dB")
-    if song.fade_in:
-        filters.append(f"afade=t=in:st=0:d={song.fade_in!r}")
-    if song.fade_out:
-        filters.append(f"afade=t=out:st={total / fps - song.fade_out:.6f}:d={song.fade_out!r}")
-    duck = duck_expression(edl)
-    if duck:
-        filters += ["asetnsamples=n=256:p=0", f"volume='{duck}':eval=frame"]
-    filters += [f"apad=whole_len={samples}", f"atrim=end_sample={samples}"]
-    chains.append(f"[{add(*spec)}:a:0]{','.join(filters)}[song]")
-
-    mix = ["[song]"]
-    for k, audio in enumerate(edl.audio):
-        if k in stems:  # already cut to the span
-            spec, trim, stream = ["-i", str(stems[k])], "asetpts=PTS-STARTPTS", 0
-        else:
-            source = resolve(edl_dir, audio.source)
-            spec, trim = audio_source(source, probes[source], audio.src_in, audio.src_out)
-            stream = audio.track
-        length = audio.src_out - audio.src_in
-        filters = [trim, stereo]
-        if audio.gain_db:
-            filters.append(f"volume={audio.gain_db!r}dB")
-        if audio.fade_in:
-            filters.append(f"afade=t=in:st=0:d={audio.fade_in!r}")
-        if audio.fade_out:
-            filters.append(f"afade=t=out:st={length - audio.fade_out:.6f}:d={audio.fade_out!r}")
-        delay = round(to_frame(audio.timeline_in, fps) * SAMPLE_RATE / fps)
-        filters.append(f"adelay=delays={delay}S:all=1")
-        chains.append(f"[{add(*spec)}:a:{stream}]{','.join(filters)}[a{k}]")
-        mix.append(f"[a{k}]")
-    master = "[song]"
-    if len(mix) > 1:
-        chains.append(f"{''.join(mix)}amix=inputs={len(mix)}:normalize=0:duration=first[mix]")
-        master = "[mix]"
-    chains.append(f"{master}alimiter=limit={LIMIT}:level=0:latency=1,"
-                  f"apad=whole_len={samples},atrim=end_sample={samples}[aout]")
+    chains += mix_chains(edl, edl_dir, probes, add, stems, song_commands, reverb_ir)
 
     return ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", *args,
             "-filter_complex", ";".join(chains), "-map", "[vout]", "-map", "[aout]", "-frames:v", str(total),
@@ -782,11 +1009,14 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
     def span(a: int, b: int) -> str:
         return f"{a / fps:.3f}–{b / fps:.3f}"
 
+    windows = ", ".join(f"{piece.src_in:.3f}–{piece.src_out:.3f}" for piece in song_pieces(song))
+    tail = song.tail
     lines = [f"# {edl.title or name}", "",
              f"{out.width}×{out.height} at {fps} fps, {total / fps:.3f} s ({total} frames). "
-             f"Song `{song.source}` {song.src_in:.3f}–{song.src_out:.3f} s at {song.speed:g}×"
+             f"Song `{song.source}` {windows} s at {song.speed:g}×"
              f"{f', fade in {song.fade_in:g} s' if song.fade_in else ''}"
              f"{f', fade out {song.fade_out:g} s' if song.fade_out else ''}"
+             f"{f', {tail.type} tail {tail.seconds:g} s from the last {tail.input:g} s' if tail else ''}"
              f"{f', ending fade to black {edl.ending.fade_to_black:g} s' if edl.ending.fade_to_black else ''}.", ""]
     if edl.notes:
         lines += [edl.notes, ""]
@@ -803,15 +1033,23 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
         cursor = b
     if cursor < total:
         lines.append(f"| | {span(cursor, total)} | {total - cursor} | black | | | | | |")
+    if song.keyframes:
+        lines += ["", "| Song key | Time (s) | Ease | Gain | Low-pass | High-pass |", "|---|---|---|---|---|---|"]
+        for i, key in enumerate(song.keyframes):
+            cells = [f"{key.gain_db:+g} dB" if key.gain_db is not None else "",
+                     f"{key.lowpass:g} Hz" if key.lowpass is not None else "",
+                     f"{key.highpass:g} Hz" if key.highpass is not None else ""]
+            lines.append(f"| {i + 1} | {key.t:.3f} | {key.ease} | {' | '.join(cells)} |")
     if edl.audio:
         lines += ["", "| Audio layer | Time (s) | Source | Source time (s) | Gain | Song duck | Why |",
                   "|---|---|---|---|---|---|---|"]
         for i, layer in enumerate(edl.audio):
-            start = to_frame(layer.timeline_in, fps) / fps
-            lines.append(f"| {i + 1} | {start:.3f}–{start + layer.src_out - layer.src_in:.3f} | "
+            start, end = layer_times(layer, fps)
+            muffle = f", muffled to {layer.muffle_hz:g} Hz" if layer.muffle_hz is not None else ""
+            lines.append(f"| {i + 1} | {start:.3f}–{end:.3f} | "
                          f"{_cell(layer.source)} (track {layer.track}{', voice' if layer.stem == 'voice' else ''}) | "
-                         f"{layer.src_in:.3f}–{layer.src_out:.3f} | "
-                         f"{layer.gain_db:+g} dB | {layer.duck_db:g} dB | {_cell(layer.why or '')} |")
+                         f"{layer.src_in:.3f}–{layer_end(layer):.3f} | "
+                         f"{layer.gain_db:+g} dB | {layer.duck_db:g} dB{muffle} | {_cell(layer.why or '')} |")
     if edl.overlays:
         lines += ["", "| Overlay | Time (s) | Source | Opacity | Why |", "|---|---|---|---|---|"]
         for i, overlay in enumerate(edl.overlays):
@@ -927,6 +1165,8 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     edl = load_edl(edl_path)
     edl_dir = edl_path.resolve().parent
     probes, problems = check_sources(edl, edl_dir)
+    if not problems:
+        edl, problems = resolve_layers(edl, edl_dir, probes)
     if problems:
         raise EdlError(problems)
     out, fps, total = edl.output, edl.output.fps, output_frames(edl)
@@ -941,11 +1181,6 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     out_path = out_path.resolve()
     cache = out_path.parent / CACHE_DIR
     cache.mkdir(parents=True, exist_ok=True)
-    picture, handles = plan_picture(edl, edl_dir, probes)
-    files = {seg: cache / f"seg_{seg.key(out)}.mp4" for seg in [*picture, *handles.values()]}
-    todo = {files[seg]: seg for seg in files if not files[seg].exists()}
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        list(pool.map(lambda item: render_segment(item[1], out, item[0], verbose), todo.items()))
     stems = plan_stems(edl, edl_dir, probes)
     stem_files = {k: cache / f"stem_{stem.key()}.wav" for k, stem in stems.items()}
     separating = {stem_files[k]: stem for k, stem in stems.items() if not stem_files[k].exists()}
@@ -953,7 +1188,35 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
         with VoiceSeparator(verbose=verbose) as separator:
             for file, stem in separating.items():
                 render_stem(stem, separator, file, verbose)
+    # Files the song's filters read, rewritten (or removed) on every render.
+    song_commands: Path | None = None
+    reverb_ir: Path | None = None
+    for stale in (cache / "song_commands.txt", cache / "reverb.wav"):
+        stale.unlink(missing_ok=True)
+    if (text := song_command_text(edl)) is not None:
+        song_commands = cache / "song_commands.txt"
+        song_commands.write_text(text)
+    if edl.song.tail is not None and edl.song.tail.type == "reverb":
+        reverb_ir = cache / "reverb.wav"
+        write_wav(reverb_response(edl.song.tail), reverb_ir, "writing the reverb's impulse response", verbose)
+    stemmed = f"; {len(separating)} voice stems separated, {len(set(stem_files.values())) - len(separating)} cached"
 
+    if out_path.suffix.lower() == ".wav":  # the mix alone; the picture and its cache are left as they are
+        partial = out_path.with_name(out_path.stem + ".partial.wav")
+        try:
+            run(audio_command(edl, edl_dir, probes, stem_files, partial, song_commands, reverb_ir), "mixing", verbose)
+        except RenderError:
+            partial.unlink(missing_ok=True)
+            raise
+        partial.replace(out_path)
+        write_table(edl, edl_path.name, out_path.parent / "edl_table.md")
+        return f"{out_path}: audio only, {summary}{stemmed if stem_files else ''}"
+
+    picture, handles = plan_picture(edl, edl_dir, probes)
+    files = {seg: cache / f"seg_{seg.key(out)}.mp4" for seg in [*picture, *handles.values()]}
+    todo = {files[seg]: seg for seg in files if not files[seg].exists()}
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        list(pool.map(lambda item: render_segment(item[1], out, item[0], verbose), todo.items()))
     picture_list = cache / "picture.ffconcat"
     picture_list.write_text("ffconcat version 1.0\n" + "".join(_concat_line(files[seg]) for seg in picture))
     caption_dir = cache / "captions"
@@ -962,7 +1225,7 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     partial = out_path.with_name(out_path.stem + ".partial.mp4")
     try:
         run(composite_command(edl, edl_dir, probes, picture_list, {i: files[s] for i, s in handles.items()},
-                              stem_files, captions, partial, crf, preset), "compositing", verbose)
+                              stem_files, captions, partial, crf, preset, song_commands, reverb_ir), "compositing", verbose)
     except RenderError:
         partial.unlink(missing_ok=True)
         raise
@@ -976,7 +1239,7 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
             stale.unlink()
     done = f"{len(todo)} segments rendered, {len(set(files.values())) - len(todo)} cached"
     if stem_files:
-        done += f"; {len(separating)} voice stems separated, {len(set(stem_files.values())) - len(separating)} cached"
+        done += stemmed
     return f"{out_path}: {summary}; {done}"
 
 
@@ -990,7 +1253,7 @@ def positive_int(value: str) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("edl", type=Path)
-    ap.add_argument("out", type=Path, nargs="?", help="output MP4 (omit with --check)")
+    ap.add_argument("out", type=Path, nargs="?", help="output MP4, or WAV for the audio alone (omit with --check)")
     ap.add_argument("--check", action="store_true", help="validate the EDL and its sources without rendering")
     ap.add_argument("--jobs", type=positive_int, default=min(4, os.cpu_count() or 1), help="segments rendered at once")
     ap.add_argument("--crf", type=int, choices=range(0, 52), default=16, metavar="0-51", help="x264 quality (default 16)")
