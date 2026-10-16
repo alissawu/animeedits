@@ -24,11 +24,11 @@ An edit session finds its clips in an index: every shot of every episode or film
 | 1. Add the videos | `media/<show>/` | | |
 | 2. Write the manifest | `shows/<show>/show.toml` | | |
 | 3. Prepare | `python scene_frames/show.py prepare <show>` | No | ~13 min for two episodes run together |
-| 4. Research | `shows/<show>/cast/*.md`, `shows/<show>/synopses/*.md` | You | Start it while prepare runs |
-| 5. Finish | `python scene_frames/show.py finish <show>` | Haiku for captions, then the story model | ~3 min per episode, ~11 per film |
+| 4. Research | `shows/<show>/cast/*.md`, `shows/<show>/synopses/*.md` | You and subagents | Start it while prepare runs |
+| 5. Finish | `python scene_frames/show.py finish <show>` | Haiku for captions, then Opus for the story | ~3 min per episode, ~11 per film |
 | 6. Check, fix, commit | the summary from step 5 | | |
 
-Prepare is CPU work on your machine: a pass over a small copy of the video to find the cuts, a pass over the full video for stills and motion, and Whisper alongside both. Research needs none of it at first, so start the research as soon as prepare starts (step 4 says what can begin right away). finish uses Claude twice. Haiku looks at each contact sheet and captions it, about 15 s a sheet with 10 at a time. Then the story pass reads text only, the synopsis with every caption and line, and places each shot in the plot, which takes a stronger model; its requests run one after another, since each starts where the last one's scenes ended.
+Prepare is CPU work on your machine: a pass over a small copy of the video to find the cuts, a pass over the full video for stills and motion, and Whisper alongside both. Research needs none of it at first, so start the research as soon as prepare starts (step 4 says what can begin right away). finish uses Claude twice. Haiku looks at each contact sheet and captions it, about 15 s a sheet with 10 at a time. Then the story pass reads text only, the synopsis with every caption and line, and places each shot in the plot, which takes a stronger model (Opus); its requests run one after another, since each starts where the last one's scenes ended.
 
 ### 1. Add the videos
 
