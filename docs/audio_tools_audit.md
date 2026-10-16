@@ -1,10 +1,10 @@
 # Audio tools audit, 2026-10-16
 
-Scope: source-code audit at origin/main 64fa4a2, plus additive lyricsync integration. No existing tools were deleted. This distinguishes a useful editing cue from a proven semantic interpretation. A measurement that appears only in the song report is still available to the director; lack of an automated renderer consumer does not make it useless.
+Scope: source-code audit at origin/main 64fa4a2, plus additive lyricsync integration. This distinguishes a useful editing cue from a proven semantic interpretation. A measurement that appears only in the song report is still available to the director; lack of an automated renderer consumer does not make it useless.
 
 ## Verdict
 
-Keep the core song measurements and the two specialized separators. Add reference-conditioned forced alignment alongside raw recognition. The highest-value simplification would be making expensive texture tagging opt-in, not removing beats/stems/turns. Avoid adding another section/mood model until a concrete editing failure shows that the present measurements cannot support the decision.
+Keep the core musical measurements and specialized separators, with checked-reference alignment alongside recognition.
 
 ## Inventory and data flow
 
@@ -17,9 +17,8 @@ Keep the core song measurements and the two specialized separators. Add referenc
 | music.activity / loop_breaks / turns / drops | Stem presence/runs, entries/exits, loop changes, grouped structural turns, ranked drops. JSON and report; drops additionally feed frames.py and section logic. | Threshold/debounce/beat snapping can hide brief events. A ranked drop is a candidate event, not the emotional climax. | Keep. These answer “what changed?” more directly than a generic mood label. |
 | music.stops | Whole-band stops/gaps, feeding event boundaries and report. | Quiet/processed recordings and vocal-only sections can confuse thresholds. | Keep as separate from a stem's exit. |
 | _novelty / boundaries / build_sections | Spectral novelty candidates, snapped against stem/stop events, then audio/video section groupings. Reports/JSON, not renderer instructions. | No supervised verse/chorus meaning; video sections also depend on shots and recognized phrase grouping. | Keep with current descriptive labels. Do not promise semantic section recognition. |
-| music.bass_roots | Estimated per-bar bass roots in active bass spans, harmony report/JSON. | Bass root is not a full chord or harmonic analysis; separator errors and beat drift propagate. | Keep as optional planning evidence. “Bass-root changes” in high-level copy is stronger than the data supports; prefer “bass-root changes.” |
+| music.bass_roots | Estimated per-bar bass roots in active bass spans, harmony report/JSON. | Bass root is not a full chord or harmonic analysis; separator errors and beat drift propagate. | Keep as optional planning evidence. Describe bass-root changes, not full chords. |
 | voice_sections / voice_shifts | Vocal pitch/register/level summaries and shifts by section; report/JSON. | Pitch tracking under layered, processed or unvoiced vocals is uncertain. Doesn't infer character POV, emotion or singer identity. | Keep but treat as review hints, not automatic mood or POV. |
-| music.texture / Essentia TensorFlow | Whole-track key strength, instrument/genre tags; report/JSON. Does NOT provide timed mood changes. Current analyze_edit.py runs it unless --no-texture. | Optional compiled runtime plus tagger weights, substantially broader dependency surface than key alone. A top tag isn't stem activity. | Best candidate to demote to opt-in or split key from taggers. Audit only; behavior unchanged here. |
 | analyze_edit.transcribe_words / faster-whisper | Raw vocal-stem recognized text, start/end and recognition probabilities; phrase segmentation, report, timeline.json, frames.py. | Hallucinations/omissions on singing. Recognition confidence is not timestamp accuracy. | Keep for unknown audio/dialogue and mismatch discovery. Not the authoritative sung reference or final timing source. |
 | index.py dialogue transcription | Per-source dialogue timings/text used in show indexes, search/story workflows. Uses VAD unless disabled. | VAD can omit lines under score. This is a different job/input from song alignment. | Keep; shared Whisper wrapper is a possible small maintenance merge, not an output merge. |
 | lyrics.py reference reader | Published/corrected text with provenance and optional unverified LRC times. Consumed by analysis reports and frames.py. | A reference does not establish what was sung in a clip. No alignment by itself. | Keep as canonical reference parser; lyricsync reuses it. |
@@ -31,7 +30,7 @@ Keep the core song measurements and the two specialized separators. Add referenc
 
 There is overlap in decoding, level calculation and transcription setup, but the outputs serve distinct consumers. Consolidating every audio operation would risk conflating clocks, stereo rendering with mono analysis, and recognition confidence with CTC fit. The new code deliberately reuses the lyric parser and song-stem cache while leaving raw recognition untouched.
 
-Only beats, drops and words are read into the cut-pair strip today. Stem activity, turns, roots, vocal shifts and tags reach the director through report.md/timeline.json. They aren't automated renderer inputs. If an agent ignores those reports, the remedy is to inspect whether the information changes its shot/cue choices, not to infer that every unrendered field is dead code. No repository-wide runtime usage study or human timing accuracy benchmark was performed.
+Only beats, drops and words are read into the cut-pair strip today. Stem activity, turns, roots, vocal shifts reach the director through report.md/timeline.json. They aren't automated renderer inputs. If an agent ignores those reports, the remedy is to inspect whether the information changes its shot/cue choices, not to infer that every unrendered field is dead code. No repository-wide runtime usage study or human timing accuracy benchmark was performed.
 
 The previous lyricsync prototype's automatic mashup anchor selection is genuinely not ready for production: its delivered mashup retained only 9 selected words. It was NOT imported. Nor were batch hardcoded song names, previous result archives, or a parallel Demucs pipeline imported. Supply the actual sung sequence for edited material.
 
@@ -47,4 +46,4 @@ No new full-song inference/separation or paid API experiment was run as part of 
 
 ## Approved follow-up implemented
 
-Essentia key/tags now require --texture and its optional requirements-texture.txt. --lyrics now aligns the exact sung reference and embeds timed lines/words/uncertainty in timeline.json, with --alignment for reuse and --lyric-video for explicit caption rendering. Planning cues are grouped in the same file; downbeats remain explicitly unestimated. Voice shifts are labeled review hints. Existing audio.harmony JSON remains compatible.
+--lyrics now aligns the exact sung reference and embeds timed lines/words/uncertainty in timeline.json, with --alignment for reuse and --lyric-video for explicit caption rendering. Planning cues are grouped in the same file; downbeats remain explicitly unestimated. Voice shifts are labeled review hints. Existing audio.harmony JSON remains compatible.

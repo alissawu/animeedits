@@ -10,15 +10,11 @@ explains each one.
 from collections.abc import Mapping, Sequence
 import dataclasses
 from dataclasses import dataclass
-import hashlib
 import math
-from pathlib import Path
-import shutil
 import types
 import typing
 import warnings
 from typing import Any, Final, Literal, TypeVar, Union, cast
-import urllib.request
 
 import numpy as np
 from numpy.typing import NDArray
@@ -137,13 +133,7 @@ class VoiceShift:
     after: str
 
 
-@dataclass(frozen=True)
-class Texture:
-    key: str | None
-    key_strength: float | None
-    instruments: list[tuple[str, float]]
-    genre: list[tuple[str, float]]
-    error: str | None = None   # why the tagger didn't run
+
 
 
 # JSON round trip for the cache
@@ -648,98 +638,6 @@ def tempo_alternative(tempo: float) -> float | None:
     if 0 < tempo < TEMPO_TAPPED[0]:
         return round(tempo * 2, 1)
     return None
-
-
-# Texture: key, instruments, genre (Essentia)
-
-MODEL_URL: Final = "https://essentia.upf.edu/models"
-ESSENTIA_MODELS: Final = {
-    "discogs-effnet-bs64-1.pb": ("feature-extractors/discogs-effnet",
-                                 "3ed9af50d5367c0b9c795b294b00e7599e4943244f4cbd376869f3bfc87721b1"),
-    "mtg_jamendo_instrument-discogs-effnet-1.pb": ("classification-heads/mtg_jamendo_instrument",
-                                                   "2e8c3003c722e098da371b6a1f7ad0ce62fac0dcfc09c7c7997d430941196c2a"),
-    "mtg_jamendo_instrument-discogs-effnet-1.json": ("classification-heads/mtg_jamendo_instrument",
-                                                     "7d02204c6451b5615e2968ec6364bbae3b915c886e608f05f00d3a38dc5177c4"),
-    "genre_discogs400-discogs-effnet-1.pb": ("classification-heads/genre_discogs400",
-                                             "3885ba078a35249af94b8e5e4247689afac40deca4401a4bc888daf5a579c01c"),
-    "genre_discogs400-discogs-effnet-1.json": ("classification-heads/genre_discogs400",
-                                               "2d367319d9b782ffa10f69abf0e805b3ac4e10899025e5bdbaceda3919b243e0"),
-}
-ESSENTIA_DIR: Final = Path.home() / ".cache" / "animeedits" / "essentia"
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def essentia_model(name: str, model_dir: Path = ESSENTIA_DIR) -> Path:
-    """A tagger model file, downloaded once and checked against its pinned SHA-256."""
-    folder, digest = ESSENTIA_MODELS[name]
-    path = model_dir / name
-    if path.is_file() and _sha256(path) == digest:
-        return path
-    model_dir.mkdir(parents=True, exist_ok=True)
-    url = f"{MODEL_URL}/{folder}/{name}"
-    part = model_dir / f"{name}.part"
-    error: OSError | None = None
-    for _ in range(DOWNLOAD_TRIES):  # the server sometimes stalls mid-file
-        try:
-            with urllib.request.urlopen(url, timeout=120) as response, part.open("wb") as f:
-                shutil.copyfileobj(response, f)
-            break
-        except OSError as e:
-            error = e
-    else:
-        part.unlink(missing_ok=True)
-        raise RuntimeError(f"couldn't download {url}: {error}")
-    if _sha256(part) != digest:
-        part.unlink()
-        raise RuntimeError(f"{url} doesn't match its pinned checksum")
-    part.replace(path)
-    return path
-
-
-DOWNLOAD_TRIES: Final = 3
-
-
-def texture(mix44: Audio, mix16: Audio, model_dir: Path = ESSENTIA_DIR) -> Texture:
-    """Song key with its strength (Essentia's EDMA profile), the top two instruments (MTG-Jamendo) and the top
-    genres (Discogs-400) of the whole mix. The instrument tags say what the mix sounds like, not whether a
-    stem plays: the stems answer that."""
-    import json
-    try:
-        import essentia
-        import essentia.standard as es
-    except ImportError as e:
-        return Texture(None, None, [], [], f"essentia-tensorflow is not installed ({e})")
-    essentia.log.warningActive = False
-    key, scale, strength = es.KeyExtractor(profileType="edma", sampleRate=44100)(mix44)
-    try:
-        effnet = es.TensorflowPredictEffnetDiscogs(graphFilename=str(essentia_model("discogs-effnet-bs64-1.pb",
-                                                                                     model_dir)),
-                                                   output="PartitionedCall:1")
-        emb = effnet(mix16)
-        inst_model = essentia_model("mtg_jamendo_instrument-discogs-effnet-1.pb", model_dir)
-        genre_model = essentia_model("genre_discogs400-discogs-effnet-1.pb", model_dir)
-        inst = es.TensorflowPredict2D(graphFilename=str(inst_model), output="model/Sigmoid")(emb).mean(axis=0)
-        genre = es.TensorflowPredict2D(graphFilename=str(genre_model), input="serving_default_model_Placeholder",
-                                       output="PartitionedCall:0")(emb).mean(axis=0)
-        inst_names = json.loads(essentia_model("mtg_jamendo_instrument-discogs-effnet-1.json",
-                                               model_dir).read_text())["classes"]
-        genre_names = json.loads(essentia_model("genre_discogs400-discogs-effnet-1.json",
-                                                model_dir).read_text())["classes"]
-    except (OSError, RuntimeError, ValueError, KeyError) as e:
-        return Texture(f"{key} {scale}", round(float(strength), 2), [], [], f"tagger unavailable: {e}")
-    top_inst = [(str(inst_names[i]), round(float(inst[i]), 2)) for i in np.argsort(-inst)[:2]]
-    top_genre = [(str(genre_names[i]), round(float(genre[i]), 2)) for i in np.argsort(-genre)[:2]]
-    return Texture(f"{key} {scale}", round(float(strength), 2), top_inst, top_genre)
-
-
-def genre_name(label: str) -> str:
-    """Discogs labels are 'Parent---Style'."""
-    parent, _, style = label.partition("---")
-    return f"{style} ({parent.lower()})" if style else parent
-
 
 
 TIME_FIELDS: Final = frozenset({"time", "start", "end", "hit", "novelty_time"})

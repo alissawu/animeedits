@@ -5,7 +5,7 @@ frame. For anything with sound, separates drums, bass, other and vocals (stems.p
 what changes (music.py): when each stem plays, the turns where drums or bass come in or
 leave or the band drops away under the voice, the drop, stops, loop breaks, bass roots per
 bar, the voice's loudness and pitch per section, plus tempo, beats, loudness and rough
-sections, key, instruments and genre. Word timings come from faster-whisper on the vocal
+sections. Word timings come from faster-whisper on the vocal
 stem. Writes report.md and timeline.json, plus frames.json and contact sheets for video.
 Audio-only input (mp3, wav, m4a, flac and so on) gets the audio report only. Recognized
 words retain text, timing and confidence; optional published lyrics stay separate and
@@ -36,7 +36,7 @@ Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 3, 3, 3, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 3, 3, 3
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -218,7 +218,6 @@ class Settings:
     caption_step: float
     whisper_model: str | None
     lang: str | None
-    texture: bool
 
 
 @dataclass(frozen=True)
@@ -231,7 +230,6 @@ class Analysis:
     sections: list[Section]
     sheets: SheetIndex | None
     settings: Settings
-    texture: music.Texture | None = None
     lyrics: lyric_reference.Reference | None = None
     aligned_words: list[lyricsync.Word] | None = None
 
@@ -934,10 +932,6 @@ def transcribe_words(vocals: NDArray[np.float32], model_name: str, lang: str | N
     return words
 
 
-def analyze_texture(media: Path) -> music.Texture:
-    return music.texture(decode_audio(media, 44100), decode_audio(media, 16000))
-
-
 def phrases_from(words: Sequence[Word]) -> list[Phrase]:
     phrases: list[Phrase] = []
     for w in sorted(words, key=lambda w: w.start):
@@ -1090,7 +1084,6 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         "phrases": [asdict(p) for p in an.phrases],
         "sections": [asdict(s) for s in an.sections],
         "sheets": asdict(an.sheets) if an.sheets else None,
-        "texture": asdict(an.texture) if an.texture else None,
         "settings": asdict(an.settings),
     }
 
@@ -1266,30 +1259,18 @@ def _runs_text(runs: Sequence[tuple[float, float]]) -> str:
     return ", ".join(f"{a:.2f}–{b:.2f}" for a, b in runs) or "never"
 
 
-def _texture_line(t: music.Texture | None, audio: AudioMap) -> str:
-    tempo = (f"tempo {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s ({len(audio.beats)} beats "
-             "tracked)")
+def _tempo_line(audio: AudioMap) -> str:
+    tempo = (f"tempo {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s ({len(audio.beats)} beats tracked)")
     if audio.tempo_alternative:
-        tempo += (f"; beat trackers often count double or half at tempos like this, so the beat you tap may be "
-                  f"{audio.tempo_alternative:g} BPM")
-    parts = [tempo]
-    if t is not None:
-        if t.key:
-            parts.insert(0, f"key {t.key} (strength {t.key_strength:.2f})")
-        if t.instruments:
-            parts.append("top instrument tags " + ", ".join(f"{n} {p:.2f}" for n, p in t.instruments))
-        if t.genre:
-            parts.append(f"top genre tag {music.genre_name(t.genre[0][0])} {t.genre[0][1]:.2f}")
-        if t.error:
-            parts.append(f"tagger: {t.error}")
-    return "- **Key and tempo:** " + "; ".join(parts) + "."
+        tempo += f"; check by ear whether the tapped beat is {audio.tempo_alternative:g} BPM"
+    return "- **Tempo:** " + tempo + "."
 
 
 def _skeleton(an: Analysis) -> list[str]:
     audio = an.audio
     lines = ["## Skeleton", ""]
     if audio:
-        lines.append(_texture_line(an.texture, audio))
+        lines.append(_tempo_line(audio))
         drop = audio.drop
         if drop is not None:
             turn = next(t for t in audio.turns if t.time == drop.time)
@@ -1536,9 +1517,8 @@ def render_report(an: Analysis) -> str:
     lines += _audio_detail(an) + _sheet_lines(an) + [
         "## Settings", "",
         f"{picture}Stems {separation.MODEL} (audio-separator); Whisper {st.whisper_model or 'skipped'}"
-        f"{f' ({st.lang})' if st.lang else ''} on the vocal stem; key and tags "
-        f"{'Essentia' if st.texture else 'skipped'}; versions: picture {PICTURE_VERSION}, audio {AUDIO_VERSION}, "
-        f"words {WORDS_VERSION}, texture {TEXTURE_VERSION}.", ""]
+        f"{f' ({st.lang})' if st.lang else ''} on the vocal stem; "
+        f"versions: picture {PICTURE_VERSION}, audio {AUDIO_VERSION}, words {WORDS_VERSION}.", ""]
     return "\n".join(lines)
 
 
@@ -1559,11 +1539,8 @@ def main() -> None:
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
     ap.add_argument("--lyrics", type=Path, help="published lyrics as LRC or text; kept separate from recognition")
     ap.add_argument("--lyrics-source", help="URL or attribution for --lyrics (defaults to its local path)")
-    ap.add_argument("--texture", action="store_true", help="opt in to Essentia key/instrument/genre analysis")
     ap.add_argument("--alignment", type=Path, help="existing lyricsync alignment.json; requires --lyrics")
     ap.add_argument("--lyric-video", action="store_true", help="explicit caption MP4; requires --lyrics")
-    ap.add_argument("--no-texture", action="store_true",
-                    help="skip the key, instrument and genre tags (Essentia; models download on first use)")
     ap.add_argument("--stem-cache", type=Path, default=separation.CACHE_DIR,
                     help=f"folder for the cached stems, shared between runs (default {separation.CACHE_DIR})")
     a = ap.parse_args()
@@ -1622,18 +1599,6 @@ def main() -> None:
         print(f"audio: {audio.tempo:.1f} BPM, {_count(len(audio.turns), 'turn')}"
               f"{f', drop at {drop.time:.2f}s' if drop else ', no drop'}", flush=True)
 
-    texture: music.Texture | None = None
-    if info.has_audio and a.texture and not a.no_texture:
-        texture_sig = source | {"version": TEXTURE_VERSION}
-        data = cached(cache / "texture.json", texture_sig)
-        if data is None:
-            texture = analyze_texture(media)
-            if texture.error is None:  # retry a failed model download next run
-                save(cache / "texture.json", {"signature": texture_sig, "data": asdict(texture)})
-        else:
-            texture = music.from_json(music.Texture, data)
-        print(f"texture: {texture.key or 'no key'}" + (f" ({texture.error})" if texture.error else ""), flush=True)
-
     words: list[Word] = []
     model = None if a.no_words or not info.has_audio else a.whisper_model
     if model is not None:
@@ -1659,8 +1624,7 @@ def main() -> None:
     phrases = phrases_from(words)
     sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
     analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
-                        Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang,
-                                 texture is not None), texture, reference, aligned)
+                        Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang), reference, aligned)
     save(out / "timeline.json", timeline_json(analysis))
     if picture is not None:
         save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)

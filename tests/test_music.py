@@ -1,11 +1,8 @@
 import dataclasses
-import io
 import json
 from pathlib import Path
 import sys
-import tempfile
 import unittest
-from unittest import mock
 
 import numpy as np
 
@@ -236,27 +233,6 @@ class JsonTests(unittest.TestCase):
         self.assertEqual(later.time, 5.0)
         self.assertEqual(music.shift_times(act, 1.0).runs, [(5.0, 10.5)])
         self.assertEqual(music.shift_times(harmony, 1.0).bars[1], music.Bar(3.5, 5.5, None))
-
-
-class ModelDownloadTests(unittest.TestCase):
-    def test_checksum_is_enforced(self):
-        good = b"model bytes"
-        digest = __import__("hashlib").sha256(good).hexdigest()
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.dict(music.ESSENTIA_MODELS, {"m.pb": ("heads/m", digest)}):
-            with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(b"tampered")):
-                with self.assertRaises(RuntimeError):
-                    music.essentia_model("m.pb", Path(tmp))
-            self.assertEqual(list(Path(tmp).iterdir()), [])
-            with mock.patch("urllib.request.urlopen", side_effect=[OSError("stalled"), io.BytesIO(good)]):
-                path = music.essentia_model("m.pb", Path(tmp))
-            self.assertEqual(path.read_bytes(), good)
-            with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no download when cached")):
-                self.assertEqual(music.essentia_model("m.pb", Path(tmp)), path)
-
-    def test_genre_name(self):
-        self.assertEqual(music.genre_name("Electronic---Synth-pop"), "Synth-pop (electronic)")
-        self.assertEqual(music.genre_name("Rock"), "Rock")
 
 
 if __name__ == "__main__":

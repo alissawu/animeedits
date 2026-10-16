@@ -105,8 +105,8 @@ class PlanningTimelineTests(unittest.TestCase):
         ref = lyrics.Reference("ref.txt", "checked", [lyrics.Line(None, "a b")])
         an = ae.Analysis(ae.MediaInfo("song.wav", 5., None, True, .5),
                          None, None, [], [], [], None,
-                         ae.Settings(.45, 2, (.75, 1.), .25, None, None, False),
-                         None, ref, [ls.Word("a", 1., 1.2, .1, 0, 0, True),
+                         ae.Settings(.45, 2, (.75, 1.), .25, None, None),
+                         ref, [ls.Word("a", 1., 1.2, .1, 0, 0, True),
                                      ls.Word("b", 1.3, 1.5, .9, 1, 0, False)])
         data = ae.timeline_json(an)
         line = data["aligned_lyrics"]["lines"][0]

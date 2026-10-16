@@ -50,7 +50,7 @@ class LyricReferenceTests(unittest.TestCase):
         ref = lyrics.Reference("/reference.lrc", "published source", [lyrics.Line(.1, "different words"),
                                                                      lyrics.Line(None, "missing time")])
         an = ae.Analysis(ae.MediaInfo("/song.wav", 1, None, True, 0), None, None, recognized,
-                         ae.phrases_from(recognized), [], None, ae.Settings(.45, 2, (.75, 1), .25, "test", "en", False),
+                         ae.phrases_from(recognized), [], None, ae.Settings(.45, 2, (.75, 1), .25, "test", "en"),
                          lyrics=ref)
         data = ae.timeline_json(an)
         self.assertEqual(data["words"], [asdict(w) for w in recognized])
