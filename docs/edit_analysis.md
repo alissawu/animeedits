@@ -70,7 +70,7 @@ No lyric or dialogue text is written anywhere. Whisper's words are dropped as so
 
 ## Known gaps
 
-Checked against the trial on every song in `media/songs/` (notes in `out/song-map-check/notes.md`, main checkout only):
+Checked against the trial on the songs in `media/songs/`:
 - **A new layer at the same level.** On the Legendary Lovers edit a layer comes in under the voice at 3.4 s. The other stem rises only 1–2 dB, but it gets about 5× noisier and 450 Hz brighter, and moves from G to E. Nothing in the map says so; only the novelty boundary at 3.55 marks it. A flatness and brightness step catches it, but at that setting it also fires 37–82 times per full song.
 - **Short breaks.** A half-bar bass gap (Nothing Without You, 10.0–10.5) is too short for a stem run and too shallow for a stop.
 - **Ducks under film dialogue.** The music dipping under a spoken line in an edit's audio isn't reported, and the vocal stem can't tell speech from singing.
