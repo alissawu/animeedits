@@ -97,3 +97,39 @@ class AlignmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PlanningTimelineTests(unittest.TestCase):
+    def test_lines_preserve_uncertain_words_and_media_offset(self):
+        import analyze_edit as ae
+        import lyrics
+        ref = lyrics.Reference("ref.txt", "checked", [lyrics.Line(None, "a b")])
+        an = ae.Analysis(ae.MediaInfo("song.wav", 5., None, True, .5),
+                         None, None, [], [], [], None,
+                         ae.Settings(.45, 2, (.75, 1.), .25, None, None, False),
+                         None, ref, [ls.Word("a", 1., 1.2, .1, 0, 0, True),
+                                     ls.Word("b", 1.3, 1.5, .9, 1, 0, False)])
+        data = ae.timeline_json(an)
+        line = data["aligned_lyrics"]["lines"][0]
+        self.assertEqual((line["start"], line["end"]), (1.5, 2.))
+        self.assertEqual([w["uncertain"] for w in line["words"]], [True, False])
+        self.assertIsNone(data["planning"]["downbeats"])
+        self.assertEqual(data["words"], [])
+        self.assertIn("review hints", data["planning"]["voice_shifts_status"])
+
+    def test_reused_alignment_validates_reference_and_never_renders_by_default(self):
+        import lyrics
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media = root / "song.wav"
+            file = root / "alignment.json"
+            word = ls.Word("a", .1, .2, .1, 0, 0, True)
+            from dataclasses import asdict
+            file.write_text(json.dumps({"media": str(media), "words": [asdict(word)]}))
+            ref = lyrics.Reference("ref.txt", "checked", [lyrics.Line(None, "a")])
+            with mock.patch.object(ls, "decode", return_value=np.zeros(ls.RATE, np.float32)), \
+                 mock.patch.object(ls, "render_video") as render:
+                self.assertEqual(ls.align_reference(media, ref, root, root, file), [word])
+                render.assert_not_called()
+                wrong = lyrics.Reference("ref.txt", "checked", [lyrics.Line(None, "b")])
+                with self.assertRaises(ValueError):
+                    ls.align_reference(media, wrong, root, root, file)

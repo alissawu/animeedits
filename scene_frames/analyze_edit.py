@@ -9,7 +9,7 @@ sections, key, instruments and genre. Word timings come from faster-whisper on t
 stem. Writes report.md and timeline.json, plus frames.json and contact sheets for video.
 Audio-only input (mp3, wav, m4a, flac and so on) gets the audio report only. Recognized
 words retain text, timing and confidence; optional published lyrics stay separate and
-are not automatically word-aligned. See docs/edit_analysis.md.
+are aligned independently when --lyrics is supplied. See docs/edit_analysis.md.
 """
 import argparse
 import bisect
@@ -28,6 +28,7 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 import music
+import lyricsync
 import lyrics as lyric_reference
 import stems as separation
 
@@ -232,6 +233,7 @@ class Analysis:
     settings: Settings
     texture: music.Texture | None = None
     lyrics: lyric_reference.Reference | None = None
+    aligned_words: list[lyricsync.Word] | None = None
 
     @property
     def fps(self) -> float:
@@ -1027,6 +1029,23 @@ def build_sections(info: MediaInfo, picture: Picture | None, audio: AudioMap | N
     return sections_from(phrases, audio.drops if audio else [], boundaries, end)
 
 
+
+def aligned_lines(an: Analysis) -> list[dict[str, Any]]:
+    if an.lyrics is None or an.aligned_words is None:
+        return []
+    offset = an.info.audio_offset
+    result: list[dict[str, Any]] = []
+    for i, line in enumerate(an.lyrics.lines):
+        words = [asdict(w) | {"start": w.start + offset, "end": w.end + offset,
+                             "uncertain": w.low_score}
+                 for w in an.aligned_words if w.line_index == i]
+        if words:
+            result.append({"line_index": i, "text": line.text, "start": words[0]["start"],
+                           "end": words[-1]["end"], "uncertain": any(w["uncertain"] for w in words),
+                           "words": words})
+    return result
+
+
 def timeline_json(an: Analysis) -> dict[str, Any]:
     def segment(s: Segment) -> dict[str, Any]:
         row: dict[str, Any] = {"kind": s.kind, "start": an.time(s.start), "end": an.time(s.end),
@@ -1054,6 +1073,20 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         "words": [asdict(w) for w in an.words],
         "word_text_source": "Whisper recognition, not verified lyrics" if any(w.text is not None for w in an.words) else None,
         "lyrics": asdict(an.lyrics) if an.lyrics else None,
+        "aligned_lyrics": {"source": an.lyrics.source if an.lyrics else None,
+                           "method": "reference-conditioned CTC; uncalibrated review hints",
+                           "lines": aligned_lines(an)} if an.aligned_words is not None else None,
+        "planning": {"clock": "media seconds, including audio_offset",
+                     "beats": an.audio.beats if an.audio else [],
+                     "downbeats": None,
+                     "downbeats_status": "not estimated",
+                     "accents": an.audio.onsets if an.audio else [],
+                     "accent_method": "strong onset candidates, not semantic emphasis",
+                     "sections": [asdict(s) for s in an.sections],
+                     "drops": [asdict(d) for d in an.audio.drops] if an.audio else [],
+                     "stops": [asdict(s) for s in an.audio.stops] if an.audio else [],
+                     "stem_events": [asdict(e) for t in an.audio.turns for e in t.events] if an.audio else [],
+                     "voice_shifts_status": "review hints; not emotion or singer identity"},
         "phrases": [asdict(p) for p in an.phrases],
         "sections": [asdict(s) for s in an.sections],
         "sheets": asdict(an.sheets) if an.sheets else None,
@@ -1279,7 +1312,7 @@ def _skeleton(an: Analysis) -> list[str]:
         lines.append(f"- **Section boundaries in the audio** (timbre and loudness novelty, moved to a stem event "
                      f"within {EVENT_SNAP:g} s): {bounds}.")
         if audio.voice_shifts:
-            lines.append("- **Voice between sections:** " + "; ".join(
+            lines.append("- **Voice between sections (review hints):** " + "; ".join(
                 f"{v.time:.2f} {'up' if v.semitones >= 0 else 'down'} {abs(v.semitones):.1f} semitones "
                 f"({v.before} → {v.after}), {v.db:+.1f} dB" for v in audio.voice_shifts) + ".")
     else:
@@ -1526,6 +1559,9 @@ def main() -> None:
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
     ap.add_argument("--lyrics", type=Path, help="published lyrics as LRC or text; kept separate from recognition")
     ap.add_argument("--lyrics-source", help="URL or attribution for --lyrics (defaults to its local path)")
+    ap.add_argument("--texture", action="store_true", help="opt in to Essentia key/instrument/genre analysis")
+    ap.add_argument("--alignment", type=Path, help="existing lyricsync alignment.json; requires --lyrics")
+    ap.add_argument("--lyric-video", action="store_true", help="explicit caption MP4; requires --lyrics")
     ap.add_argument("--no-texture", action="store_true",
                     help="skip the key, instrument and genre tags (Essentia; models download on first use)")
     ap.add_argument("--stem-cache", type=Path, default=separation.CACHE_DIR,
@@ -1533,6 +1569,8 @@ def main() -> None:
     a = ap.parse_args()
     if a.lyrics_source and a.lyrics is None:
         ap.error("--lyrics-source needs --lyrics")
+    if (a.alignment or a.lyric_video) and a.lyrics is None:
+        ap.error("--alignment and --lyric-video require --lyrics")
     reference = None
     if a.lyrics is not None:
         try:
@@ -1585,7 +1623,7 @@ def main() -> None:
               f"{f', drop at {drop.time:.2f}s' if drop else ', no drop'}", flush=True)
 
     texture: music.Texture | None = None
-    if info.has_audio and not a.no_texture:
+    if info.has_audio and a.texture and not a.no_texture:
         texture_sig = source | {"version": TEXTURE_VERSION}
         data = cached(cache / "texture.json", texture_sig)
         if data is None:
@@ -1609,16 +1647,30 @@ def main() -> None:
             words = [Word(**w) for w in data]
         print(f"words: {len(words)} timed", flush=True)
 
+    aligned: list[lyricsync.Word] | None = None
+    if reference is not None:
+        if not info.has_audio:
+            ap.error("--lyrics alignment requires audio")
+        try:
+            aligned = lyricsync.align_reference(media, reference, a.stem_cache, out / "lyricsync",
+                                                a.alignment, a.lyric_video)
+        except (OSError, ValueError, RuntimeError, ImportError, KeyError, TypeError) as e:
+            ap.error(f"lyric alignment failed: {e}")
     phrases = phrases_from(words)
     sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
     analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
                         Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang,
-                                 texture is not None), texture, reference)
+                                 texture is not None), texture, reference, aligned)
     save(out / "timeline.json", timeline_json(analysis))
     if picture is not None:
         save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)
                                    for i, s in enumerate(picture.frames)])
-    (out / "report.md").write_text(render_report(analysis))
+    report = render_report(analysis)
+    if aligned is not None:
+        report += "\n## Aligned lyric lines (reference-conditioned; review uncertain timing)\n\n"
+        for line in aligned_lines(analysis):
+            report += f"{line['start']:.3f}–{line['end']:.3f}: {line['text']}" + (" [uncertain]" if line["uncertain"] else "") + "\n"
+    (out / "report.md").write_text(report)
     print(f"report -> {out / 'report.md'}")
 
 

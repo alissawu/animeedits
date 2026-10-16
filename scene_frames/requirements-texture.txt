@@ -1,0 +1,2 @@
+# Optional key/instrument/genre analysis for --texture
+essentia-tensorflow>=2.1b6.dev1389,<2.2

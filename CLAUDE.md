@@ -49,7 +49,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 | Need | Command | Docs |
 |---|---|---|
 | Index a show's videos: shots, stills, motion, flashes, look, captions, dialogue, then scenes and corrected names | `python scene_frames/show.py prepare SHOW`, research, then `finish SHOW` | [indexing.md](docs/indexing.md) |
-| Map a song, or measure any edit (including your own). For a song: key and tempo, beats, when the sung words fall, when drums, bass and vocals come in and drop out, the drop, where the band stops, where the voice jumps, where a loop breaks, and chord changes | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
+| Map a song, or measure any edit (including your own). For a song: tempo, beats, aligned sung lines with --lyrics, optional key/tags with --texture, when drums, bass and vocals come in and drop out, the drop, where the band stops, where the voice jumps, where a loop breaks, and bass-root changes | `python scene_frames/analyze_edit.py MEDIA OUT_DIR [--lyrics sung.txt] [--alignment FILE] [--texture]` | [edit_analysis.md](docs/edit_analysis.md) |
 | Align a checked English sung reference to word times; render black-screen lyric captions | `python scene_frames/lyricsync.py MEDIA OUT_DIR --lyrics FILE.txt --video` | [lyricsync.md](docs/lyricsync.md) |
 | See what happens in a stretch of source or across an edit's cuts, as frames stamped with source times: a board of every shot, a dense strip for picking a cut point, or the frames either side of each cut | `python scene_frames/frames.py SOURCE IN OUT OUT.jpg [--dense]`, `python scene_frames/frames.py --edl EDL.json OUT.jpg` | [pipeline.md](docs/pipeline.md#frames) |
 | Render an edit decision list (`--check` validates without rendering). Besides cutting the picture, the EDL can shape the song (splices, volume, low- and high-pass filters, bass, compression and echo or reverb tails, all changeable over time) and lay audio over it: film dialogue, which can keep only the voices, or sound effects from files | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render) and [shaping the song](docs/pipeline.md#shaping-the-song); full schema in the `scene_frames/edl.py` docstring |
@@ -75,3 +75,5 @@ Things you can't see from the code:
 ## Code
 
 Python 3.11+, full type hints, strict mypy (`scene_frames/mypy.ini`). Tests: `.venv/bin/python -m unittest discover -s tests`.
+
+Song planning uses timeline.json with aligned lyric lines/words and uncertainty alongside beats, accent candidates, sections, drops, stops and stem events. Downbeats are explicitly unestimated. Voice shifts are review hints. Key/genre/instrument analysis requires --texture; caption MP4s require --lyric-video. See docs/edit_analysis.md.

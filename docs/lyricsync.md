@@ -27,7 +27,7 @@ python scene_frames/frames.py --edl out/edit/edl.json out/edit/cuts.jpg --song-m
 
 This overlays aligned reference words on the cut-pair word strip without modifying raw Whisper caches. The alignment must name the EDL's song file; its original-source times are mapped through song splices. The score label is CTC, not Whisper recognition confidence. Beats/drops remain from the existing song map. Without a map, aligned words can still be displayed but no beats/drops are invented. Existing `--lyrics` reference lines remain independent; don't treat their LRCLIB line stamps as validated aligned times.
 
-This is an additive review input, not a replacement for analyze_edit.py's raw recognition output. It does not inject reference-conditioned text into dialogue indexes, section detection or the renderer. Listen/check against the actual track before claiming word-level sync.
+This is an additive review input, not a replacement for analyze_edit.py's raw recognition output. analyze_edit.py --lyrics now computes alignment, or --alignment reuses it, and stores timed lines/words in timeline.json; --lyric-video explicitly requests captions. It does not inject reference-conditioned text into dialogue indexes, section detection or the renderer. Listen/check against the actual track before claiming word-level sync.
 
 ## Checks
 

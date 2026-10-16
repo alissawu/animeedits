@@ -236,6 +236,40 @@ def render_video(media: Path, out: Path, duration: float) -> None:
          "-movflags", "+faststart", "lyrics.mp4"], cwd=out)
 
 
+
+def align_reference(media: Path, ref: lyrics.Reference, cache: Path, out: Path,
+                    alignment_file: Path | None = None, video: bool = False) -> list[Word]:
+    """Compute or validate alignment. Caption video is explicitly opt-in."""
+    lines = [line.text for line in ref.lines]
+    reference_tokens(lines)
+    if alignment_file is not None:
+        data = json.loads(alignment_file.read_text())
+        if Path(data["media"]).resolve() != media.resolve():
+            raise ValueError("alignment media differs from analyzed media")
+        words = [Word(**w) for w in data["words"]]
+        duration = len(decode(media)) / RATE
+        validate(lines, words, duration)
+    else:
+        import torch
+        import torchaudio
+        torch.set_num_threads(3)
+        wave = vocals(media, None, cache)
+        duration = wave.size / RATE
+        bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+        emission, edges = infer(wave, bundle.get_model().eval())
+        words = align(lines, emission, edges, bundle.get_labels())
+        out.mkdir(parents=True, exist_ok=True)
+        payload = {"version": 1, "media": str(media.resolve()), "duration": duration,
+                   "model": MODEL, "reference": asdict(ref), "words": [asdict(w) for w in words],
+                   "warning": "Reference-conditioned timing; CTC scores are uncalibrated."}
+        (out / "alignment.json").write_text(json.dumps(payload, indent=2))
+    if video:
+        out.mkdir(parents=True, exist_ok=True)
+        captions(words, out)
+        render_video(media, out, duration)
+    return words
+
+
 def main() -> None:
     import stems
     ap = argparse.ArgumentParser(description=__doc__)
