@@ -47,6 +47,16 @@ name = "Shibuya Incident"
 cast = "cast/s2_shibuya.md"
 
 [[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E09.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E09.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e09.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E10.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E10.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e10.md"
+
+[[groups.videos]]
 video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.mp4"
 subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.en.srt"
 synopsis = "synopses/s2e11.md"
