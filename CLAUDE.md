@@ -49,6 +49,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 | Index source video: shots, stills, motion, flashes, look, captions, dialogue | `python scene_frames/index.py VIDEO out/index/NAME ...`, full command below | [pipeline.md](docs/pipeline.md) |
 | Place each shot in the story: scenes, what happens, who's there, caption names the scene contradicts | `python scene_frames/story.py out/index/NAME --context out/index/SHOW.md` | [pipeline.md](docs/pipeline.md#story) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
+| See what happens in a stretch of source or across an edit's cuts, as frames stamped with source times: a board of every shot, a dense strip for picking a cut point, or the frames either side of each cut | `python scene_frames/frames.py SOURCE IN OUT OUT.jpg [--dense]`, `python scene_frames/frames.py --edl EDL.json OUT.jpg` | [pipeline.md](docs/pipeline.md#frames) |
 | Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
 
 Things you can't see from the code:
