@@ -119,3 +119,33 @@ Sources: https://github.com/CPJKU/beat_this and https://github.com/CPJKU/beat_th
 timeline.json planning.downbeats contains media-clock seconds. planning.beat_grid and audio.rhythm.beats contain time, bar, beat_in_bar and strength. The report lists this grid as a table. Bar 1 is the first detected downbeat in this file, not an absolute score bar. Beats before it have null bar/position and unknown strength. Each subsequent downbeat starts a new bar; no four-beat assumption or final-bar extrapolation is imposed. Strong means downbeat and weak means other positioned beats, not acoustic loudness or secondary metrical accents. Empty predictions are labeled no downbeats detected. Predictions remain fallible on edited, rubato or ambiguous music.
 
 The old audio.beats and planning.beats arrays remain the librosa grid for compatibility with existing sync and bass-root analysis. The joint beat_grid is distinct and internally consistent with downbeats; downbeats are not snapped onto the legacy grid.
+
+## Acoustic word emphasis
+
+With aligned reference lyrics, the CLI adds duration (seconds), stress (0–1), and
+stressed (boolean) to each aligned_lyrics.lines[].words[] entry in timeline.json.
+Raw Whisper words and lyricsync alignment files are unchanged. No words are
+filtered; CTC scores and uncertainty remain independent of emphasis.
+
+The measure uses the cached mono Demucs vocal stem, with audio_offset subtracted
+from media-clock word times. It takes 20 ms RMS frames at 10 ms hops, measuring
+positive RMS rise (an amplitude-onset proxy) and RMS peak from 30 ms before the
+word through the first 160 ms or word end, whichever comes first. Log-compressed
+onset, peak and duration features are z-scored separately within each reference
+line and across the song's active words. The two normalizations have equal weight;
+onset and level each contribute 45%, duration 10%. A sigmoid maps the composite
+to stress, with stressed=true at 0.65. Silent/out-of-signal words score zero;
+equal or singleton observations are neutral, not automatically stressed.
+
+This is relative acoustic prominence, not lexical stress, semantic importance,
+or a probability that a human hears emphasis. A held vowel, breath, bleed, or
+bad alignment can mislead it. Compare word stress with musical accents, phrasing
+and the intended picture; do not cut at every stressed word. aligned_lyrics also
+records stress_method and stress_threshold. Programmatic timeline_json calls
+without a vocal array explicitly report not computed and do not invent scores.
+No new models or dependencies are needed beyond the existing stem pipeline.
+
+The exploratory reference check found 30% high-stress word-boundary hits against
+23% expected, 1.31x, but weak evidence (one-sided Monte Carlo p=0.1475). See
+[word_stress_validation.md](word_stress_validation.md) for exclusions, individual
+edits and the reproducible cached-only check.

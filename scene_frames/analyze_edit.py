@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 import music
 import rhythm as rhythm_analysis
 import lyricsync
+import word_stress
 import lyrics as lyric_reference
 import stems as separation
 
@@ -1043,7 +1044,7 @@ def aligned_lines(an: Analysis) -> list[dict[str, Any]]:
     return result
 
 
-def timeline_json(an: Analysis) -> dict[str, Any]:
+def timeline_json(an: Analysis, vocals: NDArray[np.float32] | None = None) -> dict[str, Any]:
     def segment(s: Segment) -> dict[str, Any]:
         row: dict[str, Any] = {"kind": s.kind, "start": an.time(s.start), "end": an.time(s.end),
                                "start_frame": s.start, "end_frame": s.end}
@@ -1053,6 +1054,9 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         row["sync"] = {k: asdict(v) if v else None for k, v in an.sync(an.time(s.start)).items()}
         return row
 
+    lyric_lines = aligned_lines(an)
+    if vocals is not None:
+        word_stress.annotate(lyric_lines, vocals, SAMPLE_RATE, an.info.audio_offset)
     picture = None
     if an.picture is not None:
         picture = {
@@ -1072,7 +1076,9 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         "lyrics": asdict(an.lyrics) if an.lyrics else None,
         "aligned_lyrics": {"source": an.lyrics.source if an.lyrics else None,
                            "method": "reference-conditioned CTC; uncalibrated review hints",
-                           "lines": aligned_lines(an)} if an.aligned_words is not None else None,
+                           "stress_method": word_stress.METHOD if vocals is not None else "not computed",
+                           "stress_threshold": word_stress.THRESHOLD,
+                           "lines": lyric_lines} if an.aligned_words is not None else None,
         "planning": {"clock": "media seconds, including audio_offset",
                      "beats": an.audio.beats if an.audio else [],
                      "downbeats": an.audio.rhythm.downbeats if an.audio and an.audio.rhythm else None,
@@ -1650,7 +1656,7 @@ def main() -> None:
     sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
     analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
                         Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang), reference, aligned)
-    save(out / "timeline.json", timeline_json(analysis))
+    save(out / "timeline.json", timeline_json(analysis, mix_and_stems()[1]["vocals"] if aligned else None))
     if picture is not None:
         save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)
                                    for i, s in enumerate(picture.frames)])

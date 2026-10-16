@@ -115,6 +115,13 @@ class PlanningTimelineTests(unittest.TestCase):
         self.assertIsNone(data["planning"]["downbeats"])
         self.assertEqual(data["words"], [])
         self.assertIn("review hints", data["planning"]["voice_shifts_status"])
+        scored = ae.timeline_json(an, np.ones(ae.SAMPLE_RATE * 4, np.float32))
+        scored_words = scored["aligned_lyrics"]["lines"][0]["words"]
+        self.assertEqual([w["uncertain"] for w in scored_words], [True, False])
+        self.assertTrue(all("stress" in w and "stressed" in w for w in scored_words))
+        self.assertEqual(scored["words"], [])  # never score raw recognition instead
+        self.assertNotEqual(scored["aligned_lyrics"]["stress_method"], "not computed")
+
 
     def test_reused_alignment_validates_reference_and_never_renders_by_default(self):
         import lyrics
