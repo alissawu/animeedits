@@ -34,6 +34,8 @@ Measured by lining the edit's audio (`media/songs/White Light - Sidewalks and Sk
 - **A muffled ring-out.** From 19.3 s, as the picture ends, the highs fall away completely over about 2 s (to 60–70 dB below the original), and the overall level drops 4–8 dB.
 - **Highs otherwise slightly lower.** Outside those stretches the edit's highs sit about 2 dB below the original's.
 
+The renderer can make changes like these: song keyframes for volume, bass, compression and low-pass, and `muffle_hz` on a dialogue layer. See [Shaping the song](../docs/pipeline.md#shaping-the-song).
+
 ## The idea
 
 Reze is the drug: a high that feels like dying, offered as a dare, and Denji takes it.
