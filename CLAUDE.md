@@ -15,7 +15,7 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 
 ## How to work
 
-How you research, plan and build is up to you. What tends to work is planning from understanding rather than from browsing: knowing the song and the story well enough to say which stretch of the song you'll use, what it feels like, what the edit is about, and which moments it hinges on, then going to the footage to find those moments and discover what you didn't know to look for. It also helps to think through what the viewer goes through against the song: what they expect, where it turns, where it peaks, how it leaves them.
+How you research, plan and build is up to you. What tends to work is planning from understanding rather than from browsing: knowing the song and the story well enough to say which stretch of the song you'll use, what it feels like, what the edit is about, and which moments it hinges on, then going to the footage to find those moments and discover what you didn't know to look for. It also helps to work out what each part of the stretch (a verse, a build, a drop, a quiet stretch) does for that idea, so the whole stretch carries it rather than only the moment it builds to. Then think through what the viewer goes through against the song: what they expect, where it turns, where it peaks, how it leaves them.
 
 One thing is not up to you: **watch your render before presenting it.** Look at the proof sheet, or `frames.py --edl` for the frames either side of each cut, and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to. Then watch it as a viewer: what each cut makes you expect and feel, and whether the edit does what you planned. Revise until it does.
 
@@ -67,7 +67,7 @@ Things you can't see from the code:
 - For each finished edit, keep in `out/<edit-name>/`:
   - `edl.json`
   - the render
-  - a short `notes.md` with the concept you went with, the moments you planned and which of them you found in the footage, and what you'd change next time
+  - a short `notes.md` with the concept you went with, what each part of the song does for it, and the moments you planned and which of them you found in the footage
 
 ## Code
 
