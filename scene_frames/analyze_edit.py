@@ -1,11 +1,14 @@
 """Measure a reference edit's timeline, or map a song: analyze_edit.py MEDIA OUT_DIR.
 
 For video, finds hard cuts, white flashes, dips to black and cross-dissolves frame by
-frame. For anything with sound, maps the audio with librosa (tempo, beats, strong onsets,
-loudness, drops, rough sections) and vocal word timings with faster-whisper. Writes
-report.md and timeline.json, plus frames.json and contact sheets for video. Audio-only
-input (mp3, wav, m4a, flac and so on) gets the audio report only. Word text is never
-stored, only timings. See docs/edit_analysis.md.
+frame. For anything with sound, separates drums, bass, other and vocals (stems.py) and maps
+what changes (music.py): when each stem plays, the turns where drums or bass come in or
+leave or the band drops away under the voice, the drop, stops, loop breaks, bass roots per
+bar, the voice's loudness and pitch per section, plus tempo, beats, loudness and rough
+sections, key, instruments and genre. Word timings come from faster-whisper on the vocal
+stem. Writes report.md and timeline.json, plus frames.json and contact sheets for video.
+Audio-only input (mp3, wav, m4a, flac and so on) gets the audio report only. Word text is
+never stored, only timings. See docs/edit_analysis.md.
 """
 import argparse
 import bisect
@@ -16,17 +19,21 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import tempfile
 from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
+import music
+import stems as separation
+
 Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 1, 2, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 1, 3, 2, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -44,11 +51,7 @@ SAMPLE_RATE = 22050
 WINDOW = 0.25                 # loudness window, seconds
 LOW_BAND = 150.0              # Hz
 ONSET_PERCENTILE = 90.0
-DROP_SKIP = 0.5               # seconds at the start where the audio's own onset is not a drop
-SILENCE_POWER = 1e-6          # -60 dBFS; a drop needs sound before it
-DROP_MIN_DB = 6.0             # besides the biggest jump, a drop needs at least this
-DROP_SHARE = 0.5              # and at least this share of the biggest jump
-DROP_GAP = 4.0                # seconds between separate drops
+EVENT_SNAP = 1.0              # seconds; a novelty boundary moves to a stem event this close
 NOVELTY_BEATS = (4, 16)       # novelty kernel half-width in beats, scaled with the song's length
 NOVELTY_FLOOR = 0.25          # weakest section boundary, relative to the strongest
 MIN_SECTION = 1.0             # seconds; shortest section from audio boundaries
@@ -126,14 +129,17 @@ class Picture:
 
 @dataclass(frozen=True)
 class Drop:
-    time: float
-    jump_db: float            # loudness of the WINDOW after minus the WINDOW before
+    time: float               # an entry turn: drums or bass coming in, or the band coming back
+    mix_db: float | None      # the turn's whole-mix change over music.CHANGE_WINDOW either side
+    low_db: float | None      # and its drums-plus-bass change
 
 
 @dataclass(frozen=True)
 class Boundary:
-    time: float               # a beat where timbre and loudness change
+    time: float               # novelty_time moved to the nearest stem event within EVENT_SNAP
     strength: float           # novelty peak relative to the strongest, 0-1
+    novelty_time: float       # the beat where timbre and loudness change
+    event: str | None         # what happens at `time`, when it was snapped
 
 
 @dataclass(frozen=True)
@@ -141,17 +147,23 @@ class AudioMap:
     duration: float
     offset: float             # time of the first audio sample on the video clock
     tempo: float
+    tempo_alternative: float | None  # half or double, when the tracked tempo is outside music.TEMPO_TAPPED
     beats: list[float]
     onsets: list[float]       # onsets at or above the ONSET_PERCENTILE of onset strength
     rms_db: list[float]       # dBFS per WINDOW, starting at offset
     low_db: list[float]       # dBFS below LOW_BAND per WINDOW
-    drops: list[Drop]         # in time order
+    stems: list[music.StemActivity]
+    turns: list[music.Turn]   # in time order
+    drops: list[Drop]         # entries within music.DROP_TIE_DB of the largest low-end rise; the first is the drop
+    stops: list[music.Stop]
     boundaries: list[Boundary]  # rough section boundaries, in time order
+    harmony: music.Harmony    # bass root per bar
+    voice: list[music.VoiceSection]  # per song section (section_bounds)
+    voice_shifts: list[music.VoiceShift]
 
     @property
     def drop(self) -> Drop | None:
-        """The biggest loudness jump."""
-        return max(self.drops, key=lambda d: d.jump_db, default=None)
+        return self.drops[0] if self.drops else None
 
 
 @dataclass(frozen=True)
@@ -198,6 +210,7 @@ class Settings:
     caption_step: float
     whisper_model: str | None
     lang: str | None
+    texture: bool
 
 
 @dataclass(frozen=True)
@@ -210,6 +223,7 @@ class Analysis:
     sections: list[Section]
     sheets: SheetIndex | None
     settings: Settings
+    texture: music.Texture | None = None
 
     @property
     def fps(self) -> float:
@@ -753,33 +767,6 @@ def _window_db(y: NDArray[np.float32], size: int) -> list[float]:
     return [round(10 * math.log10(max(float(p), 1e-12)), 2) for p in power]
 
 
-def _drops(y: NDArray[np.float32], rate: int) -> list[tuple[float, float]]:
-    """(time, dB) of loudness jumps between the WINDOW before and the WINDOW after a moment:
-    the biggest, plus any other of at least DROP_MIN_DB and DROP_SHARE of it, DROP_GAP apart."""
-    hop = 512
-    count = y.size // hop
-    power = (y[:count * hop].astype(np.float64) ** 2).reshape(count, hop).mean(1)
-    k = max(1, round(WINDOW * rate / hop))
-    total = np.r_[0.0, np.cumsum(power)]
-    jumps: list[tuple[float, float]] = []
-    for i in range(max(k, math.ceil(DROP_SKIP * rate / hop)), count - k + 1):
-        before = (total[i] - total[i - k]) / k
-        after = (total[i + k] - total[i]) / k
-        if before > SILENCE_POWER and after > 0:
-            jumps.append((10 * math.log10(after / before), i * hop / rate))
-    jumps.sort(reverse=True)
-    if not jumps or jumps[0][0] <= 0:
-        return []
-    floor = max(DROP_MIN_DB, DROP_SHARE * jumps[0][0])
-    kept = [jumps[0]]
-    for jump, t in jumps[1:]:
-        if jump < floor:
-            break
-        if all(abs(t - other) >= DROP_GAP for _, other in kept):
-            kept.append((jump, t))
-    return sorted((t, jump) for jump, t in kept)
-
-
 def _zscore_rows(x: NDArray[np.float32]) -> NDArray[np.float32]:
     return (x - x.mean(1, keepdims=True)) / (x.std(1, keepdims=True) + 1e-6)
 
@@ -812,43 +799,97 @@ def _novelty(y: NDArray[np.float32], rate: int, beat_frames: NDArray[np.int_]) -
             if novelty[i] >= NOVELTY_FLOOR and novelty[i] == novelty[max(0, i - half):i + half + 1].max()]
 
 
-def analyze_audio(media: Path, offset: float = 0.0) -> AudioMap:
+def _event_times(turns: Sequence[music.Turn], acts: Sequence[music.StemActivity],
+                 stops: Sequence[music.Stop], end: float) -> list[tuple[float, str]]:
+    """Every stem event a novelty boundary can snap to, with what happens there."""
+    out = [(t.time, _event_text(next((e for e in t.events if e.time == t.time), t.events[0]))) for t in turns]
+    for act in acts:
+        for a, b in act.runs:
+            out += [(a, f"{act.stem} {'enter' if act.stem in ('drums', 'vocals') else 'enters'}")] if a > 0 else []
+            out += [(b, f"{act.stem} {'stop' if act.stem in ('drums', 'vocals') else 'stops'}")] if b < end else []
+    out += [(s.hit, "hit after a stop") for s in stops]
+    return sorted(out)
+
+
+def _snap_boundaries(novelty: Sequence[tuple[float, float]], events: Sequence[tuple[float, str]]) -> list[Boundary]:
+    out = []
+    for t, strength in novelty:
+        near = min(events, key=lambda e: abs(e[0] - t), default=None)
+        if near is not None and abs(near[0] - t) <= EVENT_SNAP:
+            out.append(Boundary(round(near[0], 3), round(strength, 3), round(t, 3), near[1]))
+        else:
+            out.append(Boundary(round(t, 3), round(strength, 3), round(t, 3), None))
+    merged: list[Boundary] = []
+    for b in sorted(out, key=lambda b: b.time):  # two novelty peaks can snap to one event
+        if merged and merged[-1].time == b.time:
+            if b.strength > merged[-1].strength:
+                merged[-1] = b
+        else:
+            merged.append(b)
+    return merged
+
+
+def analyze_audio(y: NDArray[np.float32], stems: separation.Stems, offset: float = 0.0) -> AudioMap:
+    """The song map of `y` (mono at SAMPLE_RATE) from its stems. Times are on the audio clock plus `offset`."""
     import librosa
     from scipy import signal
-    y = decode_audio(media)
     if y.size < SAMPLE_RATE:
         raise ValueError("audio is shorter than one second")
-    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=SAMPLE_RATE)
-    beats = librosa.frames_to_time(beat_frames, sr=SAMPLE_RATE)
-    strength = librosa.onset.onset_strength(y=y, sr=SAMPLE_RATE)
-    peaks = librosa.onset.onset_detect(onset_envelope=strength, sr=SAMPLE_RATE)
+    rate = SAMPLE_RATE
+    tempo_arr, beat_frames = librosa.beat.beat_track(y=y, sr=rate)
+    tempo = round(float(np.atleast_1d(tempo_arr)[0]), 2)
+    beats = [round(float(t), 3) for t in librosa.frames_to_time(beat_frames, sr=rate)]
+    strength = librosa.onset.onset_strength(y=y, sr=rate)
+    peaks = librosa.onset.onset_detect(onset_envelope=strength, sr=rate)
     strong = peaks[strength[peaks] >= np.percentile(strength, ONSET_PERCENTILE)]
-    onsets = librosa.frames_to_time(strong, sr=SAMPLE_RATE)
-    size = round(WINDOW * SAMPLE_RATE)
-    low = signal.sosfiltfilt(signal.butter(4, LOW_BAND, "lowpass", fs=SAMPLE_RATE, output="sos"), y)
-    return AudioMap(duration=round(y.size / SAMPLE_RATE, 3), offset=offset,
-                    tempo=round(float(np.atleast_1d(tempo)[0]), 2),
-                    beats=[round(float(t) + offset, 3) for t in beats],
+    onsets = librosa.frames_to_time(strong, sr=rate)
+    size = round(WINDOW * rate)
+    low = signal.sosfiltfilt(signal.butter(4, LOW_BAND, "lowpass", fs=rate, output="sos"), y)
+    duration = round(y.size / rate, 3)
+
+    levels = music.stem_levels(stems, y, rate)
+    acts, events = music.activity(stems, levels, rate, beats)
+    events += music.loop_breaks(stems, rate, beats, acts)
+    turns = music.turns(events, levels)
+    drops = [Drop(t.time, t.mix_db, t.low_db) for t in music.drops(turns)]
+    stops = music.stops(y, rate, beats)
+    boundaries = _snap_boundaries(_novelty(y, rate, beat_frames), _event_times(turns, acts, stops, duration))
+    runs = {a.stem: a.runs if a.present and not a.faint else [] for a in acts}
+    vocal_runs = next(a.runs for a in acts if a.stem == "vocals")
+    voice = music.voice_sections(stems["vocals"], rate, section_bounds(drops, boundaries, duration), vocal_runs)
+    shift = music.shift_times
+    return AudioMap(duration=duration, offset=offset, tempo=tempo, tempo_alternative=music.tempo_alternative(tempo),
+                    beats=[round(t + offset, 3) for t in beats],
                     onsets=[round(float(t) + offset, 3) for t in onsets],
                     rms_db=_window_db(y, size), low_db=_window_db(low.astype(np.float32), size),
-                    drops=[Drop(round(t + offset, 3), round(jump, 2)) for t, jump in _drops(y, SAMPLE_RATE)],
-                    boundaries=[Boundary(round(t + offset, 3), round(s, 3))
-                                for t, s in _novelty(y, SAMPLE_RATE, beat_frames)])
+                    stems=shift(acts, offset), turns=shift(turns, offset), drops=shift(drops, offset),
+                    stops=shift(stops, offset), boundaries=shift(boundaries, offset),
+                    harmony=shift(music.bass_roots(stems["bass"], rate, beats, runs["bass"]), offset),
+                    voice=shift(voice, offset), voice_shifts=shift(music.voice_shifts(voice), offset))
 
 
 def audio_from_json(data: dict[str, Any]) -> AudioMap:
-    return AudioMap(**(data | {"drops": [Drop(**d) for d in data["drops"]],
-                               "boundaries": [Boundary(**b) for b in data["boundaries"]]}))
+    return music.from_json(AudioMap, data)
 
 
-def transcribe_words(media: Path, model_name: str, lang: str | None, offset: float = 0.0) -> list[Word]:
-    """Word timings from faster-whisper. The words themselves are discarded."""
+def transcribe_words(vocals: NDArray[np.float32], model_name: str, lang: str | None,
+                     offset: float = 0.0) -> list[Word]:
+    """Word timings from faster-whisper on the vocal stem (mono at SAMPLE_RATE). The words are discarded."""
+    import soundfile as sf
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=4)
-    # Silero VAD drops vocals that sit under music, so every window is decoded.
-    segments, _ = model.transcribe(str(media), language=lang, word_timestamps=True, vad_filter=False)
-    return [Word(round(w.start + offset, 3), round(w.end + offset, 3), round(w.probability, 3))
-            for s in segments for w in (s.words or []) if w.end > w.start]
+    with tempfile.TemporaryDirectory(prefix="analyze-edit-") as tmp:
+        path = Path(tmp) / "vocals.wav"
+        sf.write(path, vocals, SAMPLE_RATE, subtype="FLOAT")
+        # Silero VAD drops vocals that sit under music, so every window is decoded.
+        segments, _ = model.transcribe(str(path), language=lang, word_timestamps=True, vad_filter=False)
+        words = [Word(round(w.start + offset, 3), round(w.end + offset, 3), round(w.probability, 3))
+                 for s in segments for w in (s.words or []) if w.end > w.start]
+    return words
+
+
+def analyze_texture(media: Path) -> music.Texture:
+    return music.texture(decode_audio(media, 44100), decode_audio(media, 16000))
 
 
 def phrases_from(words: Sequence[Word]) -> list[Phrase]:
@@ -913,16 +954,22 @@ def sections_from(phrases: Sequence[Phrase], drops: Sequence[Drop], boundaries: 
     return _sections(bounds + [end], phrases, drops)
 
 
-def audio_sections(audio: AudioMap, phrases: Sequence[Phrase], end: float) -> list[Section]:
-    """Song sections: split at drops and at novelty boundaries more than MIN_SECTION from a drop."""
-    drop_times = [d.time for d in audio.drops]
-    marks = sorted(drop_times + [b.time for b in audio.boundaries
+def section_bounds(drops: Sequence[Drop], boundaries: Sequence[Boundary], end: float,
+                   start: float = 0.0) -> list[float]:
+    """Song section edges: the start, the drops, novelty boundaries more than MIN_SECTION from a drop, the end."""
+    drop_times = [d.time for d in drops]
+    marks = sorted(drop_times + [b.time for b in boundaries
                                  if all(abs(b.time - t) > MIN_SECTION for t in drop_times)])
-    bounds = [0.0]
+    bounds = [start]
     for t in marks:
         if MIN_SECTION <= t - bounds[-1] and t <= end - MIN_SECTION:
             bounds.append(t)
-    return _sections(bounds + [end], phrases, audio.drops)
+    return bounds + [end]
+
+
+def audio_sections(audio: AudioMap, phrases: Sequence[Phrase], end: float) -> list[Section]:
+    """Song sections: split at drops and at novelty boundaries more than MIN_SECTION from a drop."""
+    return _sections(section_bounds(audio.drops, audio.boundaries, end, audio.offset), phrases, audio.drops)
 
 
 def build_sections(info: MediaInfo, picture: Picture | None, audio: AudioMap | None,
@@ -964,6 +1011,7 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         "phrases": [asdict(p) for p in an.phrases],
         "sections": [asdict(s) for s in an.sections],
         "sheets": asdict(an.sheets) if an.sheets else None,
+        "texture": asdict(an.texture) if an.texture else None,
         "settings": asdict(an.settings),
     }
 
@@ -1100,21 +1148,98 @@ def _header(an: Analysis) -> list[str]:
             "first frame.", "Word timings are machine-made; no lyric or dialogue text is stored.", ""]
 
 
+PLURAL = {"drums", "vocals"}
+
+
+def _part(part: str, singular: str, plural: str) -> str:
+    """'bass enters', 'drums enter', 'band (all but the vocal) enters'."""
+    name = {"band": "the band", "other": "the other stem"}.get(part, part)
+    return f"{name} {plural if part in PLURAL else singular}"
+
+
+def _event_text(e: music.StemEvent) -> str:
+    if e.change == "enters":
+        text = _part(e.part, "comes in", "come in")
+    elif e.change == "exits":
+        text = _part(e.part, "stops", "stop") + (" for the rest of the song" if e.final else "")
+    elif e.change == "loop_break":
+        assert e.loop is not None
+        text = (_part(e.part, "stops", "stop") + f" repeating its two-bar loop (correlation {e.loop[0]:.2f} → "
+                f"{e.loop[1]:.2f})")
+    elif e.part == "band":
+        text = (f"the band (all but the vocal) {e.db or 0:+.0f} dB over {music.BAND_WINDOW:g} s, "
+                + ("voice continues" if e.voice else "no voice"))
+    else:
+        text = f"{_part(e.part, 'goes', 'go')} {e.change} {abs(e.db or 0):.0f} dB"
+    return text
+
+
+def _turn_summary(t: music.Turn) -> str:
+    return "; ".join(_event_text(e) + (f" at {e.time:.2f}" if abs(e.time - t.time) >= 0.05 else "")
+                     for e in t.events)
+
+
+def _db(x: float | None) -> str:
+    return "—" if x is None else f"{x:+.0f}"
+
+
+def _runs_text(runs: Sequence[tuple[float, float]]) -> str:
+    return ", ".join(f"{a:.2f}–{b:.2f}" for a, b in runs) or "never"
+
+
+def _texture_line(t: music.Texture | None, audio: AudioMap) -> str:
+    tempo = (f"tempo {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s ({len(audio.beats)} beats "
+             "tracked)")
+    if audio.tempo_alternative:
+        tempo += (f"; beat trackers often count double or half at tempos like this, so the beat you tap may be "
+                  f"{audio.tempo_alternative:g} BPM")
+    parts = [tempo]
+    if t is not None:
+        if t.key:
+            parts.insert(0, f"key {t.key} (strength {t.key_strength:.2f})")
+        if t.instruments:
+            parts.append("top instrument tags " + ", ".join(f"{n} {p:.2f}" for n, p in t.instruments))
+        if t.genre:
+            parts.append(f"top genre tag {music.genre_name(t.genre[0][0])} {t.genre[0][1]:.2f}")
+        if t.error:
+            parts.append(f"tagger: {t.error}")
+    return "- **Key and tempo:** " + "; ".join(parts) + "."
+
+
 def _skeleton(an: Analysis) -> list[str]:
     audio = an.audio
     lines = ["## Skeleton", ""]
     if audio:
-        lines.append(f"- **Tempo:** {audio.tempo:.1f} BPM, so a beat is {60 / audio.tempo:.3f} s; "
-                     f"{len(audio.beats)} beats tracked.")
-        jumps = ", ".join(f"{d.time:.2f} s ({d.jump_db:+.1f} dB)" for d in audio.drops) or "none"
-        lines.append(f"- **{'Drop' if len(audio.drops) == 1 else 'Drops'}:** {jumps}, measured as the loudness "
-                     f"change from the {WINDOW:g} s before to the {WINDOW:g} s after.")
-        bounds = ", ".join(f"{b.time:.2f}" for b in audio.boundaries) or "none found"
-        lines.append(f"- **Section boundaries in the audio** (timbre and loudness novelty, on beats): {bounds}.")
+        lines.append(_texture_line(an.texture, audio))
+        drop = audio.drop
+        if drop is not None:
+            turn = next(t for t in audio.turns if t.time == drop.time)
+            others = ", ".join(f"{d.time:.2f} ({_db(d.low_db)} dB)" for d in audio.drops[1:])
+            lines.append(f"- **Drop:** {drop.time:.2f} s ({_clock(drop.time)}): {_turn_summary(turn)}. Low end "
+                         f"{_db(drop.low_db)} dB, whole mix {_db(drop.mix_db)} dB ({music.CHANGE_WINDOW:g} s medians "
+                         "after vs before): the entry with the largest low-end rise, or the first within "
+                         f"{music.DROP_TIE_DB:g} dB of it." + (f" Entries of a similar size: {others}." if others else ""))
+        else:
+            lines.append("- **Drop:** none. No drums, bass or band entry raises the low end.")
+        stems = [f"{a.stem} {_runs_text(a.runs)}" + (" (faint: may be bleed)" if a.faint else "")
+                 for a in audio.stems if a.present]
+        absent = [a.stem for a in audio.stems if not a.present]
+        lines.append("- **Stems playing:** " + "; ".join(stems) + "."
+                     + (f" Not in the song: {', '.join(absent)} (under {music.ABSENT_DB:g} dBFS)." if absent else ""))
+        lines.append(f"- **Turns:** {_count(len(audio.turns), 'turn')}, in the table below; "
+                     f"{_count(len(audio.stops), 'stop')}.")
+        bounds = ", ".join(f"{b.time:.2f}" + (f" ({b.event}, novelty at {b.novelty_time:.2f})" if b.event else "")
+                           for b in audio.boundaries) or "none found"
+        lines.append(f"- **Section boundaries in the audio** (timbre and loudness novelty, moved to a stem event "
+                     f"within {EVENT_SNAP:g} s): {bounds}.")
+        if audio.voice_shifts:
+            lines.append("- **Voice between sections:** " + "; ".join(
+                f"{v.time:.2f} {'up' if v.semitones >= 0 else 'down'} {abs(v.semitones):.1f} semitones "
+                f"({v.before} → {v.after}), {v.db:+.1f} dB" for v in audio.voice_shifts) + ".")
     else:
         lines.append("- **Audio:** none.")
     if an.phrases:
-        lines.append("- **Vocal phrases:** " + "; ".join(
+        lines.append("- **Vocal phrases** (Whisper on the vocal stem): " + "; ".join(
             f"{i}. {p.start:.2f}–{p.end:.2f} ({p.words} words)" for i, p in enumerate(an.phrases, 1)))
     elif an.settings.whisper_model is None:
         lines.append("- **Vocal phrases:** not transcribed.")
@@ -1135,6 +1260,51 @@ def _skeleton(an: Analysis) -> list[str]:
             lines.append(f"- **Busiest second:** {_count(counts[best], 'shot change')} in "
                          f"{changes[best]:.2f}–{changes[best] + 1:.2f}.")
     return lines + [""]
+
+
+def _turns_table(an: Analysis) -> list[str]:
+    audio = an.audio
+    if audio is None:
+        return []
+    lines = ["## Turns", "",
+             "Where the stems change: drums, bass or the other stem coming in or stopping, a playing stem's level "
+             f"stepping {music.STEP_DB:g} dB or more ({music.STEP_WINDOW:g} s medians), the band (everything but "
+             f"the vocal) dropping out or coming back by {music.BAND_DB:g} dB or more, and a stem that stops "
+             f"repeating its loop. Events within {music.TURN_GAP:g} s are one row. Mix and low end (drums plus "
+             f"bass) compare the {music.CHANGE_WINDOW:g} s after with the {music.CHANGE_WINDOW:g} s before, as "
+             "medians.", ""]
+    if not audio.turns:
+        return lines + ["No stem comes in, stops, steps or breaks its loop.", ""]
+    drop_times = {d.time for d in audio.drops}
+    lines += ["| Time (s) | m:ss | What changes | Mix (dB) | Low end (dB) |", "|---|---|---|---|---|"]
+    for t in audio.turns:
+        mark = " **(drop)**" if audio.drop and t.time == audio.drop.time else (" (similar entry)" if t.time in drop_times
+                                                                              else "")
+        lines.append(f"| {t.time:.2f}{mark} | {_clock(t.time)} | {_turn_summary(t)} | {_db(t.mix_db)} | "
+                     f"{_db(t.low_db)} |")
+    lines.append("")
+    if audio.stops:
+        lines += ["**Stops** (a near-silence that is unusual for its context, then a return to level): " + "; ".join(
+            f"{x.start:.2f}–{x.hit:.2f} ({x.hit - x.start:.2f} s, {x.depth_db:.0f} dB down"
+            f"{', silent' if x.silent else ''}), back at {x.hit:.2f} ({x.hit_db:+.0f} dB against before)"
+            for x in audio.stops) + ".", ""]
+    return lines
+
+
+def _harmony_lines(audio: AudioMap) -> list[str]:
+    bars = audio.harmony.bars
+    if not bars:
+        return []
+    runs: list[tuple[str | None, float, float, int]] = []
+    for b in bars:
+        if runs and runs[-1][0] == b.root:
+            root, start, _, count = runs[-1]
+            runs[-1] = (root, start, b.end, count + 1)
+        else:
+            runs.append((b.root, b.start, b.end, 1))
+    text = " | ".join(f"{root or '—'} {a:.2f}–{b:.2f} ({_count(n, 'bar')})" for root, a, b, n in runs)
+    return [f"**Bass root per bar** (the bass stem's pitch class by pyin; a bar is four tracked beats, with bar "
+            f"starts placed where the root changes; — is no clear pitch): {text}", ""]
 
 
 def _pacing_table(an: Analysis) -> list[str]:
@@ -1191,24 +1361,36 @@ def _section_table(an: Analysis) -> list[str]:
     if audio is None or not an.sections:
         return []
     lines = ["## Sections", "",
-             "Split at drops and audio section boundaries. Vocals is the main phrase, or the share of the "
-             "section with vocals.", "",
-             "| # | Time (s) | Length (s) | Beats | Vocals | Loudness mean / peak (dB) | Low band mean (dB) "
-             "| Starts on |",
-             "|---|---|---|---|---|---|---|---|"]
-    strength = {b.time: b.strength for b in audio.boundaries}
+             "Split at the drop and at audio section boundaries. Vocals is the main phrase, or the share of the "
+             "section with vocals. Playing lists the stems that play through most of the section. Voice is the "
+             "vocal stem's median pitch (p10–p90) and median level, by pyin; a narrow or very low range is marked "
+             "unreliable, since pyin then locks onto bleed.", "",
+             "| # | Time (s) | Length (s) | Beats | Vocals | Playing | Loudness mean / peak (dB) | Low band mean (dB) "
+             "| Voice | Starts on |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    boundary = {b.time: b for b in audio.boundaries}
+    voice = {round(v.start, 3): v for v in audio.voice}
     for n, sec in enumerate(an.sections, 1):
         beats = sum(sec.start <= t < sec.end for t in audio.beats)
         vocals = f"phrase {sec.phrase}" if sec.phrase else (f"{sec.vocal_share:.0%}" if sec.vocal_share else "none")
         low = _power_db([audio.low_db[i] for i in _windows(audio, sec.start, sec.end)])
+        playing = ", ".join(a.stem for a in audio.stems if a.present
+                            and sum(max(0.0, min(b, sec.end) - max(a_, sec.start)) for a_, b in a.runs)
+                            > (sec.end - sec.start) / 2) or "none"
+        v = voice.get(round(sec.start, 3))
+        sung = "—"
+        if v is not None and v.pitch is not None:
+            sung = (f"{v.pitch} ({v.pitch_low}–{v.pitch_high}), {v.loudness_db:.1f} dB"
+                    + ("" if v.reliable else ", pitch unreliable"))
         if sec.drop:
-            starts = f"drop {sec.drop.jump_db:+.1f} dB"
-        elif sec.start in strength:
-            starts = f"boundary {strength[sec.start]:.2f}"
+            starts = f"drop (low end {_db(sec.drop.low_db)} dB)"
+        elif sec.start in boundary:
+            b = boundary[sec.start]
+            starts = f"boundary {b.strength:.2f}" + (f": {b.event}" if b.event else "")
         else:
             starts = "start"
         lines.append(f"| {n} | {sec.start:.2f}–{sec.end:.2f} | {sec.end - sec.start:.2f} | {beats} | {vocals} | "
-                     f"{_loudness(audio, sec.start, sec.end)} | {low:.1f} | {starts} |")
+                     f"{playing} | {_loudness(audio, sec.start, sec.end)} | {low:.1f} | {sung} | {starts} |")
     return lines + [""]
 
 
@@ -1226,7 +1408,7 @@ def _audio_detail(an: Analysis) -> list[str]:
         for r in range(0, len(rms), 4):
             cells = [f"{rms[i]:.1f} / {low[i]:.1f}" for i in range(r, min(r + 4, len(rms)))]
             lines.append(f"| {audio.offset + r * cell:g} | " + " | ".join(cells + [""] * (4 - len(cells))) + " |")
-        lines += ["", f"**Beats:** {' '.join(f'{t:.2f}' for t in audio.beats)}", "",
+        lines += [""] + _harmony_lines(audio) + [f"**Beats:** {' '.join(f'{t:.2f}' for t in audio.beats)}", "",
                   f"**Strong onsets** (at or above the {ONSET_PERCENTILE:g}th percentile of onset strength): "
                   f"{' '.join(f'{t:.2f}' for t in audio.onsets)}", ""]
     if an.phrases:
@@ -1249,7 +1431,7 @@ def _sheet_lines(an: Analysis) -> list[str]:
 
 
 def render_report(an: Analysis) -> str:
-    lines = _header(an) + _skeleton(an)
+    lines = _header(an) + _skeleton(an) + _turns_table(an)
     if an.picture is not None:
         lines += _pacing_table(an) + _cut_table(an)
     else:
@@ -1259,8 +1441,10 @@ def render_report(an: Analysis) -> str:
                if an.picture is not None else "")
     lines += _audio_detail(an) + _sheet_lines(an) + [
         "## Settings", "",
-        f"{picture}Whisper {st.whisper_model or 'skipped'}{f' ({st.lang})' if st.lang else ''}; versions: "
-        f"picture {PICTURE_VERSION}, audio {AUDIO_VERSION}, words {WORDS_VERSION}.", ""]
+        f"{picture}Stems {separation.MODEL} (audio-separator); Whisper {st.whisper_model or 'skipped'}"
+        f"{f' ({st.lang})' if st.lang else ''} on the vocal stem; key and tags "
+        f"{'Essentia' if st.texture else 'skipped'}; versions: picture {PICTURE_VERSION}, audio {AUDIO_VERSION}, "
+        f"words {WORDS_VERSION}, texture {TEXTURE_VERSION}.", ""]
     return "\n".join(lines)
 
 
@@ -1279,6 +1463,10 @@ def main() -> None:
                     help="faster-whisper model for word timings (default small.en)")
     ap.add_argument("--lang", help="language code for a multilingual Whisper model; default auto-detect")
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
+    ap.add_argument("--no-texture", action="store_true",
+                    help="skip the key, instrument and genre tags (Essentia; models download on first use)")
+    ap.add_argument("--stem-cache", type=Path, default=separation.CACHE_DIR,
+                    help=f"folder for the cached stems, shared between runs (default {separation.CACHE_DIR})")
     a = ap.parse_args()
     media, out = a.media.resolve(), a.out_dir.resolve()
     if not media.is_file():
@@ -1303,26 +1491,48 @@ def main() -> None:
         print(f"picture: {sum(s.kind == 'shot' for s in picture.segments)} shots, "
               f"{sum(s.kind == 'flash' for s in picture.segments)} flashes", flush=True)
 
+    loaded: dict[str, tuple[NDArray[np.float32], separation.Stems]] = {}
+
+    def mix_and_stems() -> tuple[NDArray[np.float32], separation.Stems]:
+        """Decoded and separated only when a stage that needs them isn't cached."""
+        if "mix" not in loaded:
+            y = decode_audio(media)
+            loaded["mix"] = (y, separation.load_or_separate(media, y.size, a.stem_cache))
+        return loaded["mix"]
+
     audio: AudioMap | None = None
     if info.has_audio:
-        audio_sig = source | {"version": AUDIO_VERSION}
+        audio_sig = source | {"version": AUDIO_VERSION, "stems": separation.MODEL}
         data = cached(cache / "audio.json", audio_sig)
         if data is None:
-            audio = analyze_audio(media, info.audio_offset)
+            audio = analyze_audio(*mix_and_stems(), info.audio_offset)
             save(cache / "audio.json", {"signature": audio_sig, "data": asdict(audio)})
         else:
             audio = audio_from_json(data)
         drop = audio.drop
-        print(f"audio: {audio.tempo:.1f} BPM, {_count(len(audio.drops), 'drop')}"
-              f"{f', biggest at {drop.time:.2f}s' if drop else ''}", flush=True)
+        print(f"audio: {audio.tempo:.1f} BPM, {_count(len(audio.turns), 'turn')}"
+              f"{f', drop at {drop.time:.2f}s' if drop else ', no drop'}", flush=True)
+
+    texture: music.Texture | None = None
+    if info.has_audio and not a.no_texture:
+        texture_sig = source | {"version": TEXTURE_VERSION}
+        data = cached(cache / "texture.json", texture_sig)
+        if data is None:
+            texture = analyze_texture(media)
+            if texture.error is None:  # retry a failed model download next run
+                save(cache / "texture.json", {"signature": texture_sig, "data": asdict(texture)})
+        else:
+            texture = music.from_json(music.Texture, data)
+        print(f"texture: {texture.key or 'no key'}" + (f" ({texture.error})" if texture.error else ""), flush=True)
 
     words: list[Word] = []
     model = None if a.no_words or not info.has_audio else a.whisper_model
     if model is not None:
-        words_sig = source | {"model": model, "lang": a.lang, "version": WORDS_VERSION}
+        words_sig = source | {"model": model, "lang": a.lang, "input": f"{separation.MODEL} vocals",
+                              "version": WORDS_VERSION}
         data = cached(cache / "words.json", words_sig)
         if data is None:
-            words = transcribe_words(media, model, a.lang, info.audio_offset)
+            words = transcribe_words(mix_and_stems()[1]["vocals"], model, a.lang, info.audio_offset)
             save(cache / "words.json", {"signature": words_sig, "data": [asdict(w) for w in words]})
         else:
             words = [Word(**w) for w in data]
@@ -1331,7 +1541,8 @@ def main() -> None:
     phrases = phrases_from(words)
     sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
     analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
-                        Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang))
+                        Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang,
+                                 texture is not None), texture)
     save(out / "timeline.json", timeline_json(analysis))
     if picture is not None:
         save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)
