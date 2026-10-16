@@ -19,6 +19,8 @@ Aim to make something emotionally evocative for the people who care about these 
 
 Bring that understanding together with what the song expresses to develop the edit's core thesis. Understand the lyrics, their delivery, and the emotional movement of the music. Use the connection between the song and the characters to shape the edit's perspective, progression, choice of song section, and footage.
 
+Don't commit to a thesis until every research subagent has returned: write it in `notes.md` first, and don't start the EDL before it's there. Song mapping, indexing and scouting footage can run while research is out. Have research subagents write findings to a file under `out/<edit-name>/research/` as they go, so you can read partial results instead of waiting blind. If research that changes the thesis arrives after you've built, rethink from the thesis rather than patching the finished cut.
+
 Develop this connection while researching and examining scenes. Consider what those moments mean in the original story and what they convey together in the edit. Let discoveries refine or change the idea. Treat lyrics as part of the song's meaning, rather than a list of things to illustrate.
 
 One thing is not up to you: **review your render before presenting it.** First watch it as a viewer, without reading your intention notes. What relationship do the pictures establish with the music or words? What develops across the sequence? Where is the intended connection difficult to perceive? A theme you can explain is not evidence that the edit communicates it. Storytelling can work through contrast, repetition, revelation or association; it does not require a plot turn or a new clip for every lyric.
