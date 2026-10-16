@@ -17,7 +17,7 @@ You'll be judged on whether it moves the user, whether it means something, wheth
 
 How you research, plan and build is up to you. What tends to work is planning from understanding rather than from browsing: knowing the song and the story well enough to say which stretch of the song you'll use, what it feels like, what the edit is about, and which moments it hinges on, then going to the footage to find those moments and discover what you didn't know to look for. It also helps to think through what the viewer goes through against the song: what they expect, where it turns, where it peaks, how it leaves them.
 
-One thing is not up to you: **watch your render before presenting it.** Look at the proof sheet and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to. Then watch it as a viewer: what each cut makes you expect and feel, and whether the edit does what you planned. Revise until it does.
+One thing is not up to you: **watch your render before presenting it.** Look at the proof sheet, or `frames.py --edl` for the frames either side of each cut, and run `analyze_edit.py` on your output. Confirm the cuts land where you meant them to. Then watch it as a viewer: what each cut makes you expect and feel, and whether the edit does what you planned. Revise until it does.
 
 Pitching is optional. If you want the user's steer, pitch 2–3 genuinely different concepts (the stretch of song and what it feels like, what the edit is about, the moments it hinges on, what the viewer goes through) and wait for a pick. Otherwise choose the strongest and build it.
 
@@ -49,7 +49,7 @@ Setup: everything runs in the repo's `.venv` (Python 3.12). Use `.venv/bin/pytho
 | Index a show's videos: shots, stills, motion, flashes, look, captions, dialogue, then scenes and corrected names | `python scene_frames/show.py prepare SHOW`, research, then `finish SHOW` | [indexing.md](docs/indexing.md) |
 | Map a song, or measure any edit (including your own) | `python scene_frames/analyze_edit.py MEDIA OUT_DIR` | [edit_analysis.md](docs/edit_analysis.md) |
 | See what happens in a stretch of source or across an edit's cuts, as frames stamped with source times: a board of every shot, a dense strip for picking a cut point, or the frames either side of each cut | `python scene_frames/frames.py SOURCE IN OUT OUT.jpg [--dense]`, `python scene_frames/frames.py --edl EDL.json OUT.jpg` | [pipeline.md](docs/pipeline.md#frames) |
-| Render an edit decision list (`--check` validates without rendering) | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render); full schema in the `scene_frames/edl.py` docstring |
+| Render an edit decision list (`--check` validates without rendering). Besides cutting the picture, the EDL can shape the song (splices, volume, low- and high-pass filters, bass, compression and echo or reverb tails, all changeable over time) and lay audio over it: film dialogue, which can keep only the voices, or sound effects from files | `python scene_frames/render.py EDL.json OUT.mp4` | [pipeline.md](docs/pipeline.md#render) and [shaping the song](docs/pipeline.md#shaping-the-song); full schema in the `scene_frames/edl.py` docstring |
 
 Things you can't see from the code:
 - **Sung lyrics:** Whisper gets the timing right but often the words wrong. Take the words from the published lyrics and the timing from Whisper. [LRCLIB](https://lrclib.net) has time-synced lyrics; Genius pages are often incomplete.
