@@ -52,7 +52,7 @@ are errors, so typos never pass silently.
             tail fades to silence. Keyframes, ducks and muffles apply to the tail too.
   clips     [{source, src_in, timeline_in, timeline_out, src_out, sync, why, speed=1,
               reverse=false, slowmo="repeat", crop, keyframes, shake_hz=12, color,
-              transition}], in timeline order, never overlapping. Time not covered by a
+              transition, sync_points}], in timeline order, never overlapping. Time not covered by a
             clip is black. src_in picks the source frame nearest to that time.
             Length: timeline_out - timeline_in, or (src_out - src_in) / speed when there is
             no timeline_out (constant speed only). With both, src_out must match where the
@@ -61,7 +61,15 @@ are errors, so typos never pass silently.
             sync and why are optional notes for critique: sync is what the cut lands on
             (beat, drop, word, phrase_end, motion or free), why is free text about what the
             shot does in the edit, e.g. "the last time we see her happy before the turn". The renderer
-            does not interpret them; edl_table.md and proof.jpg show them.
+            does not interpret them; edl_table.md shows them, review sheets hide them unless
+            --show-intent is passed. Cues guide taste; no clip has to cut on a beat or word.
+            sync_points [{t, target_time, label, kind="free"}]: optional named comparisons.
+            t is output seconds inside this clip (0 for its cut; later for an in-shot action),
+            snapped to a picture frame. target_time is seconds on the EDIT timeline, e.g. a
+            particular sung word's onset, drum hit, pause or motion cue. label names that event;
+            kind is beat, drop, word, phrase_end, onset, motion or free. The table and annotated
+            review show picture time minus declared target time, without pass/fail thresholds.
+            Target times are editor-supplied, not automatically verified musical events.
             crop {zoom=1, x=0.5, y=0.5}: the largest window of the output's aspect ratio,
             divided by zoom (>= 1), centred on the source point (x, y) as fractions of
             width and height, kept inside the frame.
@@ -132,6 +140,7 @@ import types
 from typing import Literal, Union, cast, get_args, get_origin, get_type_hints
 
 Sync = Literal["beat", "drop", "word", "phrase_end", "motion", "free"]
+CueKind = Literal["beat", "drop", "word", "phrase_end", "onset", "motion", "free"]
 Ease = Literal["linear", "in", "out", "in_out", "hold"]
 SlowMo = Literal["repeat", "blend", "motion"]
 AudioStem = Literal["mix", "voice"]
@@ -266,6 +275,14 @@ class Transition:
 
 
 @dataclass(frozen=True)
+class SyncPoint:
+    t: float
+    target_time: float
+    label: str
+    kind: CueKind = "free"
+
+
+@dataclass(frozen=True)
 class Clip:
     source: str
     src_in: float
@@ -282,6 +299,7 @@ class Clip:
     shake_hz: float = 12.0
     color: Color = field(default_factory=Color)
     transition: Transition = field(default_factory=Transition)
+    sync_points: tuple[SyncPoint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -819,6 +837,12 @@ def check(edl: Edl) -> list[str]:
         if length < 1:
             p.append(f"{path}: lasts {_s((end - start) / fps)} after snapping, under one frame at {fps} fps")
             continue
+        for k, point in enumerate(clip.sync_points):
+            pp = f"{path}.sync_points[{k}]"
+            need(point.t >= 0 and round(point.t * fps) < length, f"{pp}.t",
+                 f"must pick a frame inside the clip's {_s(length / fps)} length, got {point.t:g}")
+            within(point.target_time, 0, duration, f"{pp}.target_time")
+            need(bool(point.label.strip()), f"{pp}.label", "must name the intended event")
         if clip.keyframes:
             # One frame of slack: keys written at the unsnapped length should not fail.
             need(clip.keyframes[-1].t <= (length + 1) / fps + 1e-6, f"{path}.keyframes",

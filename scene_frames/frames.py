@@ -33,7 +33,9 @@ keyframes, crop and color match the render. Composited layers (flash and crossfa
 transitions, overlays, captions) are not drawn; the transition is printed instead. Under
 each row: the song's beats and sung words within CUT_REACH seconds of the cut, from an
 analyze_edit.py map of the song (found next to the EDL, or --song-map), plus lines from an
-LRC file (--lyrics) and any audio layer playing.
+LRC file (--lyrics) and any audio layer playing. Recognized text and confidence are
+shown separately from published reference lines. Intention notes and declared sync
+claims are hidden by default; --show-intent includes them for comparison after review.
 
 --crop-x F previews a 9:16 crop centred at F (0 left, 1 right) with render.py's crop math.
 With --edl it crops the edit's 16:9 output, as a vertical cut of the same edit would.
@@ -55,6 +57,7 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 import analyze_edit
+import lyrics as lyric_reference
 from edl import Clip, Crop, Edl, EdlError, Output, clip_frames, load_edl, song_pieces, source_offset
 import render
 
@@ -788,8 +791,9 @@ class SongMap:
     path: Path
     of_song: bool                 # a map of the song file itself, not of a render
     beats: list[float]            # timeline seconds
-    words: list[tuple[float, float]]
+    words: list[analyze_edit.Word]
     drops: list[float]
+    lyrics: lyric_reference.Reference | None = None
 
 
 def _song_time(edl: Edl, t: float) -> float | None:
@@ -829,10 +833,14 @@ def load_song_map(file: Path, edl: Edl, edl_dir: Path) -> SongMap | None:
 
         def played(times: Sequence[float]) -> list[float]:
             return [tl for tl in map(to_tl, times) if tl is not None]
-        words = [(start, end) for w in data.get("words", [])
+        words = [analyze_edit.Word(start, end, float(w.get("probability", 0)), w.get("text")) for w in data.get("words", [])
                  if (start := to_tl(float(w["start"]))) is not None and (end := to_tl(float(w["end"]))) is not None]
+        ref = data.get("lyrics")
+        reference = (lyric_reference.Reference(str(ref["path"]), str(ref["source"]),
+                     [lyric_reference.Line(float(line["start"]) if line.get("start") is not None else None,
+                                           str(line["text"])) for line in ref["lines"]]) if ref else None)
         return SongMap(file, of_song, played([float(b) for b in audio["beats"]]), words,
-                       played([float(d["time"]) for d in audio.get("drops", [])]))
+                       played([float(d["time"]) for d in audio.get("drops", [])]), reference)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
@@ -847,23 +855,18 @@ def find_song_map(edl: Edl, edl_dir: Path) -> SongMap | None:
     return max(found, key=lambda sm: sm.of_song, default=None)
 
 
-LRC_LINE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
-
-
 def load_lyrics(file: Path, edl: Edl) -> list[tuple[float, str]]:
     """LRC lines as (timeline seconds, text); word tags such as <00:12.34> are dropped."""
     try:
-        text = file.read_text(encoding="utf-8")
-    except OSError as e:
+        ref = lyric_reference.read(file)
+    except (OSError, UnicodeError) as e:
         raise FramesError(f"cannot read {file}: {e}") from None
-    lines = []
-    for raw in text.splitlines():
-        stamps = LRC_LINE.findall(raw)
-        words = re.sub(r"<\d+:\d+(?:\.\d+)?>", "", LRC_LINE.sub("", raw)).strip()
-        for minutes, seconds in stamps:
-            if (at := _song_time(edl, int(minutes) * 60 + float(seconds))) is not None:
-                lines.append((at, words))
-    return sorted(lines)
+    return reference_lines(ref, edl, True)
+
+
+def reference_lines(ref: lyric_reference.Reference, edl: Edl, of_song: bool) -> list[tuple[float, str]]:
+    return sorted((at, line.text) for line in ref.lines if line.start is not None
+                  and (at := _song_time(edl, line.start) if of_song else line.start) is not None)
 
 
 def parse_cuts(spec: str | None, clips: int) -> list[int]:
@@ -931,7 +934,7 @@ def _rel(values: Sequence[float], at: float) -> list[float]:
 
 
 def cut_pairs(edl_path: Path, out: Path, cut_spec: str | None, song_map_file: Path | None, lyrics_file: Path | None,
-              crop_x: float | None) -> str:
+              crop_x: float | None, *, show_intent: bool = False, lyrics_source: str | None = None) -> str:
     try:
         edl = load_edl(edl_path)
     except EdlError as e:
@@ -952,34 +955,67 @@ def cut_pairs(edl_path: Path, out: Path, cut_spec: str | None, song_map_file: Pa
             raise FramesError(f"{song_map_file} is not an analyze_edit.py map of this EDL's song or of its render")
     else:
         song_map = find_song_map(edl, edl_dir)
-    lyrics = load_lyrics(lyrics_file, edl) if lyrics_file is not None else []
+    reference = song_map.lyrics if song_map is not None else None
+    if lyrics_file is not None:
+        try:
+            reference = lyric_reference.read(lyrics_file, lyrics_source)
+        except (OSError, UnicodeError) as e:
+            raise FramesError(f"cannot read {lyrics_file}: {e}") from None
+    lyrics = (reference_lines(reference, edl, lyrics_file is not None or song_map is None or song_map.of_song)
+              if reference is not None else [])
 
     tw, th = fit(VERTICAL[0] / VERTICAL[1] if crop_x is not None else edl.output.width / edl.output.height, PAIR_TILE)
     divider = 46
     width = max(PAD * 2 + 2 * PAIR_FRAMES * (tw + PAD) + divider, 900)
     canvas = Canvas(width)
     crop = f" · 9:16 crop at x={crop_x:g}" if crop_x is not None else ""
-    canvas.text(f"{edl.title or edl_path.name} · cut pairs {cuts[0]}–{cuts[-1]}{crop}", size=17, fill=ACCENT)
+    title = (edl.title or edl_path.name) if show_intent else edl_path.name
+    canvas.text(f"{title} · cut pairs {cuts[0]}–{cuts[-1]}{crop}", size=17, fill=ACCENT)
     source = (f"song map {song_map.path}" if song_map else "no song map found (run analyze_edit.py on the song, "
               "or pass --song-map)")
     canvas.text(f"Left: the outgoing clip's last {PAIR_FRAMES} frames. Right: the incoming clip's first "
                 f"{PAIR_FRAMES}. Stamps: timeline t / source s. Frames are the clip picture rendered by render.py; "
                 f"flash and crossfade layers are listed, not drawn. Strip: ±{CUT_REACH:g} s of song around the cut, "
                 f"beats as ticks, sung words as bars. {source}.", size=13, fill=DIM)
+    canvas.text("Intention notes shown." if show_intent else "Intention notes hidden; use --show-intent to compare afterward.",
+                size=13, fill=DIM)
+    canvas.text("Cue proximity describes timing, not editing quality. Recognized words are unverified Whisper text; "
+                "p is recognition confidence, not timing accuracy. Legacy maps may have no text.", size=13, fill=DIM)
+    if reference is not None:
+        canvas.text(f"Published lyric reference: {reference.source}. {reference.alignment}. "
+                    "Untimed lines have unknown placement and are not attached to cuts.", size=13, fill=DIM)
     canvas.gap()
     with tempfile.TemporaryDirectory(prefix="frames_") as tmp:
         work = Path(tmp)
         for n in cuts:
-            canvas.image(pair_row(edl, edl_dir, probes, n, crop_x, work, width, (tw, th), divider))
+            canvas.image(pair_row(edl, edl_dir, probes, n, crop_x, work, width, (tw, th), divider, show_intent=show_intent))
             canvas.image(cut_strip(edl, n, song_map, width))
-            canvas.text(cut_notes(edl, n, song_map, lyrics), size=14)
+            canvas.text(cut_notes(edl, n, song_map, lyrics, show_intent=show_intent), size=14)
+            if show_intent:
+                clip = edl.clips[n - 1]
+                a, b = clip_frames(clip, fps)
+                for point in clip.sync_points:
+                    frame = round(point.t * fps)
+                    if frame == 0:
+                        continue
+                    at = (a + frame) / fps
+                    canvas.text(f'In-shot action: {point.label} · picture {at:.3f} s', size=14, fill=ACCENT)
+                    first, end = max(0, frame - 1), min(b - a, frame + 2)
+                    pictures = clip_frames_rendered(edl, edl_dir, probes, n - 1, first, end - first, crop_x, work)
+                    row = Image.new("RGB", (width, th + 4), BG)
+                    for k, picture in enumerate(pictures):
+                        row.paste(stamp(picture.image, f"t {picture.timeline:.2f} / s {picture.source:.2f}"),
+                                  (PAD + k * (tw + PAD), 0))
+                    canvas.image(row)
+                    canvas.image(cut_strip(edl, n, song_map, width, at=at))
+                    canvas.text(cut_notes(edl, n, song_map, lyrics, at=at), size=14)
             canvas.rule()
     canvas.save(out)
     return f"{out}: {len(cuts)} cuts" + (f", song map {song_map.path}" if song_map else ", no song map")
 
 
 def pair_row(edl: Edl, edl_dir: Path, probes: dict[Path, render.Probe], n: int, crop_x: float | None, work: Path,
-             width: int, tile: tuple[int, int], divider: int) -> Image.Image:
+             width: int, tile: tuple[int, int], divider: int, *, show_intent: bool = False) -> Image.Image:
     fps = edl.output.fps
     tw, th = tile
     incoming = edl.clips[n - 1]
@@ -1002,7 +1038,8 @@ def pair_row(edl: Edl, edl_dir: Path, probes: dict[Path, render.Probe], n: int, 
               fill=ACCENT)
     draw.text((PAD, 21), f"out: {out_name}", font=f, fill=DIM)
     rx = PAD + PAIR_FRAMES * (tw + PAD) + divider
-    draw.text((rx, 21), f"in: #{n} {Path(incoming.source).name}" + (f" · sync {incoming.sync}" if incoming.sync else ""),
+    draw.text((rx, 21), f"in: #{n} {Path(incoming.source).name}" +
+              (f" · declared sync {incoming.sync}" if show_intent and incoming.sync else ""),
               font=f, fill=DIM)
     for k, fr in enumerate(left):
         x = PAD + (PAIR_FRAMES - len(left) + k) * (tw + PAD)
@@ -1022,16 +1059,18 @@ def pair_row(edl: Edl, edl_dir: Path, probes: dict[Path, render.Probe], n: int, 
     return img
 
 
-def cut_strip(edl: Edl, n: int, song_map: SongMap | None, width: int) -> Image.Image:
+def cut_strip(edl: Edl, n: int, song_map: SongMap | None, width: int, *, at: float | None = None) -> Image.Image:
     """±CUT_REACH seconds of song around cut n: beats, sung words and the frames shown in the row."""
     fps = edl.output.fps
-    at = clip_frames(edl.clips[n - 1], fps)[0] / fps
+    if at is None:
+        at = clip_frames(edl.clips[n - 1], fps)[0] / fps
+    center = at
     left, right = PAD + 40, width - PAD - 40
     img = Image.new("RGB", (width, 36), BG)
     draw = ImageDraw.Draw(img)
 
     def x_of(t: float) -> float:
-        return left + (t - at + CUT_REACH) / (2 * CUT_REACH) * (right - left)
+        return left + (t - center + CUT_REACH) / (2 * CUT_REACH) * (right - left)
 
     draw.rectangle((left, 4, right, 32), fill="#202020")
     f = font(11)
@@ -1041,7 +1080,8 @@ def cut_strip(edl: Edl, n: int, song_map: SongMap | None, width: int) -> Image.I
         draw.rectangle((x_of(at + k / fps) + 1, 28, x_of(at + (k + 1) / fps) - 1, 32), fill="#777777")
     if song_map is not None:
         shade = ("#c792ea", "#9d6fc0")
-        for k, (s, e) in enumerate(song_map.words):
+        for k, word in enumerate(song_map.words):
+            s, e = word.start, word.end
             if e >= at - CUT_REACH and s <= at + CUT_REACH:
                 draw.rectangle((max(left, x_of(s)) + 1, 18, min(right, x_of(e)) - 1, 25), fill=shade[k % 2])
         for b in _rel(song_map.beats, at):
@@ -1052,34 +1092,45 @@ def cut_strip(edl: Edl, n: int, song_map: SongMap | None, width: int) -> Image.I
     return img
 
 
-def cut_notes(edl: Edl, n: int, song_map: SongMap | None, lyrics: Sequence[tuple[float, str]]) -> str:
+def cut_notes(edl: Edl, n: int, song_map: SongMap | None, lyrics: Sequence[tuple[float, str]], *,
+              show_intent: bool = False, at: float | None = None) -> str:
     fps = edl.output.fps
     clip = edl.clips[n - 1]
-    at = clip_frames(clip, fps)[0] / fps
+    if at is None:
+        at = clip_frames(clip, fps)[0] / fps
     parts = []
     if song_map is not None:
         beats = _rel(song_map.beats, at)
-        starts = _rel([s for s, _ in song_map.words], at)
+        starts = _rel([w.start for w in song_map.words], at)
         # A word end only matters where silence follows it: the end of a phrase or a breath.
-        gaps = _rel([e for (_, e), (s, _) in zip(song_map.words, [*song_map.words[1:], (math.inf, math.inf)])
-                     if s - e > 0.05], at)
+        gaps = _rel([w.end for w, following in zip(song_map.words, [*song_map.words[1:],
+                                                                  analyze_edit.Word(math.inf, math.inf, 0)])
+                     if following.start - w.end > 0.05], at)
         parts.append("beats " + (" ".join(f"{b:+.2f}" for b in beats) if beats else "none") + " s")
         parts.append("word starts " + (" ".join(f"{w:+.2f}" for w in starts) if starts else "none") + " s")
         if gaps:
             parts.append("singing pauses at " + " ".join(f"{w:+.2f}" for w in gaps) + " s")
+        for w in song_map.words:
+            if w.end >= at - CUT_REACH and w.start <= at + CUT_REACH:
+                text = json.dumps(w.text, ensure_ascii=False) if w.text is not None else "[text unknown]"
+                parts.append(f"recognized {text} {w.start-at:+.2f}–{w.end-at:+.2f} s (p={w.probability:.2f})")
     sung = [line for line in lyrics if line[0] <= at]
     if sung and sung[-1][1]:
-        parts.append(f"lyric at the cut (began {sung[-1][0] - at:+.2f} s): {sung[-1][1]}")
+        parts.append(f"reference lyric at the cut (began {sung[-1][0] - at:+.2f} s): {sung[-1][1]}")
     for t, text in lyrics:
         if text and at < t <= at + CUT_REACH:
-            parts.append(f"next lyric {t - at:+.2f} s: {text}")
+            parts.append(f"next reference lyric {t - at:+.2f} s: {text}")
     for k, layer in enumerate(edl.audio):
         start = layer.timeline_in
         end = None if layer.src_out is None else start + layer.src_out - layer.src_in  # None: to the file's end
         if start - CUT_REACH <= at and (end is None or at <= end + CUT_REACH):
             span = f"{start:.2f}–{end:.2f} s" if end is not None else f"from {start:.2f} s"
-            parts.append(f"audio layer {k + 1} {span}" + (f": {layer.why}" if layer.why else ""))
-    if clip.why:
+            parts.append(f"audio layer {k + 1} {span}" + (f": {layer.why}" if show_intent and layer.why else ""))
+    if show_intent and clip.sync:
+        parts.append(f"declared sync: {clip.sync}")
+    if show_intent:
+        parts.extend(render.sync_point_notes(clip, fps))
+    if show_intent and clip.why:
         parts.append(f"why: {clip.why}")
     return " · ".join(parts) if parts else "no song map, lyrics or notes for this cut"
 
@@ -1109,20 +1160,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--cut", help="cut pairs: N, A-B or a comma list; cut N is where clip #N enters (default: all)")
     ap.add_argument("--song-map", type=Path, help="cut pairs: analyze_edit.py timeline.json of the song or the render")
     ap.add_argument("--lyrics", type=Path, help="cut pairs: an LRC file of the song")
+    ap.add_argument("--lyrics-source", help="attribution for --lyrics (defaults to its local path)")
+    ap.add_argument("--show-intent", action="store_true", help="cut pairs: show why notes and declared sync cues")
     ap.add_argument("--crop-x", type=unit_interval, help="preview a 9:16 crop centred at this fraction of the width")
     ap.add_argument("--index", type=Path, help="index directory (default: out/index/NAME)")
     ap.add_argument("--no-index", action="store_true", help="ignore any index and detect shots")
     a = ap.parse_args(argv)
+    if a.lyrics_source and a.lyrics is None:
+        ap.error("--lyrics-source needs --lyrics")
     try:
         if a.edl is not None:
             if len(a.args) != 1 or a.dense:
                 ap.error("--edl takes one positional argument, OUT.jpg, and no --dense")
-            print(cut_pairs(a.edl, Path(a.args[0]), a.cut, a.song_map, a.lyrics, a.crop_x))
+            print(cut_pairs(a.edl, Path(a.args[0]), a.cut, a.song_map, a.lyrics, a.crop_x,
+                            show_intent=a.show_intent, lyrics_source=a.lyrics_source))
             return 0
         if len(a.args) != 4:
             ap.error("expected SOURCE IN OUT OUT.jpg")
-        if a.cut or a.song_map or a.lyrics:
-            ap.error("--cut, --song-map and --lyrics go with --edl")
+        if a.cut or a.song_map or a.lyrics or a.show_intent:
+            ap.error("--cut, --song-map, --lyrics and --show-intent go with --edl")
         source, out = Path(a.args[0]), Path(a.args[3])
         try:
             start, end = parse_time(a.args[1]), parse_time(a.args[2])

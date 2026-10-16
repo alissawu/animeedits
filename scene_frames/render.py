@@ -254,7 +254,7 @@ class Segment:
             start, end = clip_frames(self.clip, out.fps)
             # Placement, reasoning and transition do not change the pixels of the segment.
             look = {k: v for k, v in dataclasses.asdict(self.clip).items()
-                    if k not in ("timeline_in", "timeline_out", "src_out", "sync", "why", "transition")}
+                    if k not in ("timeline_in", "timeline_out", "src_out", "sync", "why", "transition", "sync_points")}
             data.update(source=str(self.source), size=stat.st_size, mtime=stat.st_mtime_ns, clip=look,
                         length=end - start, first=self.first, probe=dataclasses.asdict(self.probe))
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:20]
@@ -1029,6 +1029,17 @@ def _motion(clip: Clip) -> str:
     return ", ".join(parts)
 
 
+def sync_point_notes(clip: Clip, fps: int) -> list[str]:
+    """Frame-snapped picture moments against named, editor-declared cue times; no scoring."""
+    start = clip_frames(clip, fps)[0]
+    notes = []
+    for point in clip.sync_points:
+        at = (start + round(point.t * fps)) / fps
+        notes.append(f'declared {point.kind} cue "{point.label}" at {point.target_time:.3f} s: '
+                     f'picture {at:.3f} s (clip +{point.t:.3f} s), offset {at - point.target_time:+.3f} s')
+    return notes
+
+
 def write_table(edl: Edl, name: str, file: Path) -> None:
     fps, total = edl.output.fps, output_frames(edl)
     song, out = edl.song, edl.output
@@ -1049,7 +1060,7 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
              f"{f', ending fade to black {edl.ending.fade_to_black:g} s' if edl.ending.fade_to_black else ''}.", ""]
     if edl.notes:
         lines += [edl.notes, ""]
-    lines += ["| # | Time (s) | Frames | Source | Source time (s) | Motion | Enter | Sync | Why |",
+    lines += ["| # | Time (s) | Frames | Source | Source time (s) | Motion | Enter | Declared sync | Why |",
               "|---|---|---|---|---|---|---|---|---|"]
     cursor = 0
     for i, clip in enumerate(edl.clips):
@@ -1062,6 +1073,12 @@ def write_table(edl: Edl, name: str, file: Path) -> None:
         cursor = b
     if cursor < total:
         lines.append(f"| | {span(cursor, total)} | {total - cursor} | black | | | | | |")
+    points = [(i + 1, note) for i, clip in enumerate(edl.clips) for note in sync_point_notes(clip, fps)]
+    if points:
+        lines += ["", "## Named sync cues", "",
+                  "Editor-declared targets on the edit timeline. Offsets describe timing; they do not grade "
+                  "the choice or verify the target. Negative anticipates the cue; positive follows it.", ""]
+        lines += [f"- Clip {i}: {note}" for i, note in points]
     if song.keyframes:
         bass, compress = bool(track(song, "bass_db")), bool(track(song, "compress"))
         headers = ["Song key", "Time (s)", "Ease", "Gain", "Low-pass", "High-pass"]
@@ -1114,7 +1131,7 @@ def grab_frames(video: Path, frames: list[int], size: tuple[int, int]) -> dict[i
     return {f: Image.frombytes("RGB", size, proc.stdout[k * step:(k + 1) * step]) for k, f in enumerate(wanted)}
 
 
-def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path) -> None:
+def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path, *, show_intent: bool = False) -> None:
     """One row per cut: the frames either side (and the first clean frame after a flash or crossfade)."""
     out, fps, total = edl.output, edl.output.fps, output_frames(edl)
     long_side = 320
@@ -1127,10 +1144,19 @@ def write_proof(video: Path, edl: Edl, edl_dir: Path, file: Path) -> None:
         shots: list[tuple[int | None, str]] = [(a - 1 if a > 0 else None, "before"), (a, "cut")]
         if t.type != "cut":
             shots.append((a + t.frames, f"after {t.type}"))
-        sync = f"sync {clip.sync} · " if clip.sync else ""
+        sync = f"declared sync {clip.sync} · " if show_intent and clip.sync else ""
         title = (f"#{i + 1} · {a / fps:.3f} s · frame {a} · {sync}{_transition(clip)} · "
                  f"{Path(clip.source).name} {clip.src_in:.3f}–{source_end(clip, fps):.3f} s · {_motion(clip)}")
-        rows.append((shots, title, clip.why or ""))
+        intent = " ".join([clip.why or "", *sync_point_notes(clip, fps)]).strip() if show_intent else ""
+        rows.append((shots, title, intent))
+        if show_intent:
+            for point, note in zip(clip.sync_points, sync_point_notes(clip, fps)):
+                point_frame = a + round(point.t * fps)
+                if point_frame == a:
+                    continue
+                point_shots: list[tuple[int | None, str]] = [(max(a, point_frame - 1), "before action"),
+                    (point_frame, "action"), (min(b - 1, point_frame + 1), "after action")]
+                rows.append((point_shots, f"#{i + 1} · in-shot cue comparison", note))
         nxt = clip_frames(edl.clips[i + 1], fps)[0] if i + 1 < len(edl.clips) else total
         if b < nxt:
             rows.append(([(b - 1, "before"), (b, "black")], f"black · {b / fps:.3f}–{nxt / fps:.3f} s · frame {b}",
@@ -1193,7 +1219,7 @@ def render_segment(seg: Segment, out: Output, file: Path, verbose: bool) -> None
 
 
 def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 16, preset: str = "medium",
-           verbose: bool = False) -> str:
+           verbose: bool = False, show_intent: bool = False) -> str:
     """Validate the EDL; with out_path, render it. Returns a one-line summary."""
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
@@ -1268,7 +1294,7 @@ def render(edl_path: Path, out_path: Path | None, *, jobs: int = 4, crf: int = 1
     partial.replace(out_path)
 
     write_table(edl, edl_path.name, out_path.parent / "edl_table.md")
-    write_proof(out_path, edl, edl_dir, out_path.parent / "proof.jpg")
+    write_proof(out_path, edl, edl_dir, out_path.parent / "proof.jpg", show_intent=show_intent)
     keep = set(files.values()) | set(stem_files.values())
     for stale in [*cache.glob("seg_*.mp4"), *cache.glob("stem_*.wav")]:
         if stale not in keep:
@@ -1295,11 +1321,13 @@ def main() -> int:
     ap.add_argument("--crf", type=int, choices=range(0, 52), default=16, metavar="0-51", help="x264 quality (default 16)")
     ap.add_argument("--preset", choices=PRESETS, default="medium", help="x264 preset (default medium)")
     ap.add_argument("--verbose", action="store_true", help="print every ffmpeg command")
+    ap.add_argument("--show-intent", action="store_true", help="include declared sync targets and why notes in proof.jpg")
     a = ap.parse_args()
     if a.out is None and not a.check:
         ap.error("OUT is required unless --check is given")
     try:
-        print(render(a.edl, None if a.check else a.out, jobs=a.jobs, crf=a.crf, preset=a.preset, verbose=a.verbose))
+        print(render(a.edl, None if a.check else a.out, jobs=a.jobs, crf=a.crf, preset=a.preset,
+                     verbose=a.verbose, show_intent=a.show_intent))
     except EdlError as e:
         print(f"{a.edl}: {len(e.problems)} problem(s)", *[f"  - {p}" for p in e.problems], sep="\n", file=sys.stderr)
         return 2

@@ -176,5 +176,5 @@ The renderer can make changes like these: song keyframes for volume, bass, compr
 - The film's flowers are gerberas, white at the first meeting and red at the end ([Sakuga Blog](https://blog.sakugabooru.com/2026/01/06/chainsaw-man-reze-the-movie-of-the-moment/)). The film expands the pool scene ([CBR](https://www.cbr.com/chainsaw-man-movie-manga-changes-additions/)).
 - The director on explosion colors: [MANTANWEB](https://mantan-web.jp/article/20250919dog00m200003000c.html). The creator on love and explosions: [All About](https://news.allabout.co.jp/articles/o/101798/).
 - Song: [Bandcamp](https://sidewalksandskeletons.bandcamp.com/track/white-light), the title track of the album *WHITE LIGHT*. Structure and timings are from LRCLIB.
-- Confirmed by the user from the film: both lifted lines are from the beach scene, with Reze's as her parting words; the boy at 15.6 s is Aki; shot 2's sparks are Reze's bombs, continuous with shot 1.
+- Confirmed by the user from the film: both lifted lines are from the beach scene, with Reze's as her parting words; shot 2's sparks are Reze's bombs, continuous with shot 1.
 - **Unverified:** the hook's entry at ~12 s is worked out from LRCLIB's line timings (taunt at 0:31, hook at 0:41), not measured from the edit's audio.

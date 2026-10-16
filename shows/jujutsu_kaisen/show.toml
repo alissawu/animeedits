@@ -47,6 +47,21 @@ name = "Shibuya Incident"
 cast = "cast/s2_shibuya.md"
 
 [[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E06.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E06.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e06.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E07.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E07.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e07.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E08.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E08.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e08.md"
+
+[[groups.videos]]
 video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E09.BluRay.Japanese.mp4"
 subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E09.BluRay.Japanese.en.srt"
 synopsis = "synopses/s2e09.md"
@@ -60,3 +75,63 @@ synopsis = "synopses/s2e10.md"
 video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.mp4"
 subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E11.BluRay.Japanese.en.srt"
 synopsis = "synopses/s2e11.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E12.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E12.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e12.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E13.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E13.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e13.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E14.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E14.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e14.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E15.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E15.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e15.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E16.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E16.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e16.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E17.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E17.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e17.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E18.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E18.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e18.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E19.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E19.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e19.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E20.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E20.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e20.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E21.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E21.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e21.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E22.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E22.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e22.md"
+
+[[groups.videos]]
+video = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E23.BluRay.Japanese.mp4"
+subs = "jujutsu_kaisen/season_2/Jujutsu_Kaisen_S02E23.BluRay.Japanese.en.srt"
+synopsis = "synopses/s2e23.md"

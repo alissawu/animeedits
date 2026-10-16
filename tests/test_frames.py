@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from typing import Any
 
 import numpy as np
@@ -255,7 +256,60 @@ class FramesTest(unittest.TestCase):
         notes = fr.cut_notes(edl, 2, song_map, lyrics)
         self.assertIn("beats -0.50 -0.02 +0.50 s", notes)
         self.assertIn("word starts +0.10 s", notes)
-        self.assertIn("next lyric +0.10 s: second line", notes)
+        self.assertIn("next reference lyric +0.10 s: second line", notes)
+        self.assertIn("recognized [text unknown]", notes)  # legacy maps stay readable
+
+    def test_recognition_and_published_reference_follow_song_speed(self) -> None:
+        file = self.write_edl()
+        data = json.loads(file.read_text())
+        data['song'] = {'source': 'song.wav', 'src_in': 2, 'src_out': 6, 'speed': 2}
+        file.write_text(json.dumps(data))
+        map_file = self.root / 'map/timeline.json'
+        sm = json.loads(map_file.read_text())
+        sm['words'][0]['text'] = 'misheard'
+        sm['words'][0]['probability'] = .35
+        sm['lyrics'] = {'path': '/reference.lrc', 'source': 'published source',
+                        'lines': [{'start': 3.2, 'text': 'different words'}, {'start': None, 'text': 'unplaced'}]}
+        map_file.write_text(json.dumps(sm))
+        edl = fr.load_edl(file)
+        song_map = fr.load_song_map(map_file, edl, self.root)
+        assert song_map is not None and song_map.lyrics is not None
+        self.assertAlmostEqual(song_map.words[0].start, .55)
+        self.assertAlmostEqual(song_map.words[0].end, .7)
+        self.assertEqual(song_map.words[0].text, 'misheard')
+        lines = fr.reference_lines(song_map.lyrics, edl, song_map.of_song)
+        self.assertEqual(len(lines), 1)  # never attach untimed reference words to a cut
+        self.assertAlmostEqual(lines[0][0], .6)
+        notes = fr.cut_notes(edl, 2, song_map, lines)
+        self.assertIn('recognized "misheard"', notes)
+        self.assertIn('p=0.35', notes)
+        self.assertIn('reference lyric at the cut', notes)
+        self.assertIn('different words', notes)
+
+    def test_review_hides_intent_until_requested(self) -> None:
+        file = self.write_edl()
+        data = json.loads(file.read_text())
+        data['clips'][1].update(why='HIDDEN REASON', sync='word', sync_points=[
+            {'t': .5, 'target_time': 1.48, 'label': 'NAMED INTERNAL ACTION', 'kind': 'word'}])
+        data['audio'] = [{'source': 'song.wav', 'src_in': 0, 'src_out': 1, 'timeline_in': 1,
+                          'why': 'HIDDEN AUDIO REASON'}]
+        file.write_text(json.dumps(data))
+        edl = fr.load_edl(file)
+        plain = fr.cut_notes(edl, 2, None, [])
+        self.assertNotIn('REASON', plain)
+        self.assertNotIn('declared', plain)
+        annotated = fr.cut_notes(edl, 2, None, [], show_intent=True)
+        self.assertIn('HIDDEN REASON', annotated)
+        self.assertIn('HIDDEN AUDIO REASON', annotated)
+        self.assertIn('NAMED INTERNAL ACTION', annotated)
+        self.assertIn('picture 1.500 s', annotated)
+        self.assertIn('offset +0.020 s', annotated)
+        # Exercise the actual sheet path as well, without OCR assertions.
+        original = fr.cut_notes
+        for show in (False, True):
+            with mock.patch.object(fr, 'cut_notes', wraps=original) as notes:
+                fr.cut_pairs(file, self.root / f'intent-{show}.jpg', '2', None, None, None, show_intent=show)
+            self.assertEqual(notes.call_args_list[0].kwargs['show_intent'], show)
 
     def test_song_times_follow_spliced_pieces(self) -> None:
         file = self.write_edl()

@@ -8,6 +8,7 @@ The song map says where a song turns as facts about what changes: which stems pl
 
 ```sh
 python scene_frames/analyze_edit.py MEDIA OUT_DIR [--caption-band 0.75:1] [--no-words] [--no-texture] [--stem-cache DIR]
+python scene_frames/analyze_edit.py SONG OUT_DIR --lyrics song.lrc --lyrics-source "published source URL or attribution"
 ```
 
 MEDIA is a video, or an audio file such as mp3, wav, m4a or flac. Cover art in an audio file is not treated as video. For audio-only input, the visual stages are skipped and OUT_DIR gets `report.md` and `timeline.json` with the audio map, word timings and song sections.
@@ -24,7 +25,11 @@ Writes to OUT_DIR:
 - `sheets/shots_NN.jpg`: one keyframe per shot, labelled `S4 6.95-7.85s`.
 - `sheets/captions_NN.jpg`: the caption band every 0.25 s at up to 1280 px wide, so burned-in captions can be read. Use `--caption-band TOP:BOTTOM` (fractions of the frame height) to move or tighten it, and `--caption-step` to change the interval.
 
-No lyric or dialogue text is written anywhere. Whisper's words are dropped as soon as their timings are read.
+Recognized words retain `text`, `start`, `end` and `probability` in `timeline.json` and the report. This is raw Whisper recognition, not verified lyric text. Confidence describes recognition, not timing accuracy. Older maps may contain timings without text; readers show that text as unknown. The word cache version changed, so rerunning analysis rebuilds old word caches without rerunning the other cached stages.
+
+`--lyrics FILE` accepts an LRC or plain-text published reference. `--lyrics-source` records its URL or attribution; without it, the absolute local path is the source. References are stored separately in `lyrics`, with their source, original file path and lines. LRC line times are positions in the analyzed media: if analyzing a trimmed render, supply reference times for that render. They are unverified reference times; untimed lines keep `start: null`. There is no automatic correction or word alignment between the reference and recognition. Missing and different words remain visible in the separate views rather than being silently assigned times. `--no-words` leaves recognition empty and the report explicitly says word timing was not checked.
+
+Cut reports describe nearby beats, onsets and recognized word edges. Proximity is not a quality score, a verified match to an intended cue, or a requirement to cut. Use taste to choose cues, hold across them, or deliberately lead or follow them. Named comparisons, including actions inside a shot, can be recorded with EDL `sync_points` (see [pipeline.md](pipeline.md#render)).
 
 ## How it works
 
@@ -51,8 +56,8 @@ No lyric or dialogue text is written anywhere. Whisper's words are dropped as so
 15. **Voice per section.** pyin on the vocal stem at 16 kHz with 20 ms frames, over frames inside the vocal stem's runs, above −50 dBFS and with a pitch. Each section gets the median pitch, p10–p90 and median level. A section with a p10–p90 range under 1.5 semitones or a median below A2 is marked unreliable: pyin has locked onto bass bleed (I Really Want to Stay at Your House's choruses read as a constant F#2). Between consecutive reliable sections, a move of 3 semitones or 4 dB is a voice shift. pyin still makes octave errors that this guard doesn't catch.
 16. **Bass roots.** pyin on the bass stem at 8 kHz gives a pitch class per beat. A bar is four beats; the beat that starts a bar is the one of four that puts the most root changes on bar starts, since the beat tracker gives no downbeats. Each bar gets its most common pitch class, or none when under 30% of its frames carry a pitch. On White Light this gives A–C–E–D–A in two-bar steps, the chords under the hook.
 17. **Key and tags.** Essentia's key extractor (EDMA profile) gives the song key and its strength. The Discogs-EffNet embedding gives the top two MTG-Jamendo instrument tags and the top Discogs-400 genre tag of the whole mix. The tags say what the mix sounds like, not whether a stem plays. On August 10 they report bass, which plays only some stretches, and on an isolated guitar they still report drums. The stems answer which parts play.
-18. **Words.** faster-whisper runs on the vocal stem with `word_timestamps=True` and VAD off. Words closer than 1 s form a vocal phrase. On the Legendary Lovers edit, Whisper on the mix found 3 words; on the vocal stem it hears every line. The vocal stem can't tell film dialogue from singing.
-19. **Report.** A video is split into sections at phrase edges and drops, each snapped to a shot boundary within 0.5 s. A song is split at the drop, its similar entries, and audio boundaries at least 1 s from them. Its table gives each section's beats, vocal phrase or vocal share, the stems playing through most of it, loudness, low band, the voice, and what it starts on. Every picture row is measured at its first frame; for a shot after a dissolve, that is the first blended frame. "On" means within 0.10 s. Events more than 1 s from a row are left out of the table but kept in `timeline.json`.
+18. **Words.** faster-whisper runs on the vocal stem with `word_timestamps=True` and VAD off. Text, timings and confidence are preserved as recognition, separately from any published lyric reference. Words closer than 1 s form a vocal phrase. On the Legendary Lovers edit, Whisper on the mix found 3 words; on the vocal stem it hears every line. The vocal stem can't tell film dialogue from singing.
+19. **Report.** A video is split into sections at phrase edges and drops, each snapped to a shot boundary within 0.5 s. A song is split at the drop, its similar entries, and audio boundaries at least 1 s from them. Its table gives each section's beats, vocal phrase or vocal share, the stems playing through most of it, loudness, low band, the voice, and what it starts on. Every picture row is measured at its first frame; for a shot after a dissolve, that is the first blended frame. "Near" means within 0.10 s and describes proximity only. Events more than 1 s from a row are left out of the table but kept in `timeline.json`.
 
 ## Design choices
 

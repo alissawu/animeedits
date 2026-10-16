@@ -7,8 +7,9 @@ leave or the band drops away under the voice, the drop, stops, loop breaks, bass
 bar, the voice's loudness and pitch per section, plus tempo, beats, loudness and rough
 sections, key, instruments and genre. Word timings come from faster-whisper on the vocal
 stem. Writes report.md and timeline.json, plus frames.json and contact sheets for video.
-Audio-only input (mp3, wav, m4a, flac and so on) gets the audio report only. Word text is
-never stored, only timings. See docs/edit_analysis.md.
+Audio-only input (mp3, wav, m4a, flac and so on) gets the audio report only. Recognized
+words retain text, timing and confidence; optional published lyrics stay separate and
+are not automatically word-aligned. See docs/edit_analysis.md.
 """
 import argparse
 import bisect
@@ -27,13 +28,14 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 
 import music
+import lyrics as lyric_reference
 import stems as separation
 
 Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 3, 3, 2, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION, TEXTURE_VERSION = 3, 3, 3, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -62,7 +64,7 @@ MIN_SECTION = 1.0             # seconds; shortest section from audio boundaries
 LONG_AUDIO = 60.0             # seconds; longer audio gets a coarser loudness table
 PHRASE_GAP = 1.0              # seconds without words that end a vocal phrase
 SNAP = 0.5                    # snap section bounds to a shot boundary this close
-SYNC = 0.1                    # "on" an event when within this many seconds
+SYNC = 0.1                    # "near" an event within this many seconds; not a quality threshold
 REACH = 1.0                   # the report leaves out events further than this from a row
 SHEET_WIDTH = 1280            # widest frame decoded for contact sheets
 SHEET_HEIGHT = 1600           # tallest caption sheet
@@ -175,6 +177,7 @@ class Word:
     start: float
     end: float
     probability: float
+    text: str | None = None   # raw Whisper text; None in legacy maps, never a verified lyric
 
 
 @dataclass(frozen=True)
@@ -228,6 +231,7 @@ class Analysis:
     sheets: SheetIndex | None
     settings: Settings
     texture: music.Texture | None = None
+    lyrics: lyric_reference.Reference | None = None
 
     @property
     def fps(self) -> float:
@@ -914,7 +918,7 @@ def audio_from_json(data: dict[str, Any]) -> AudioMap:
 
 def transcribe_words(vocals: NDArray[np.float32], model_name: str, lang: str | None,
                      offset: float = 0.0) -> list[Word]:
-    """Word timings from faster-whisper on the vocal stem (mono at SAMPLE_RATE). The words are discarded."""
+    """Raw recognized words, timings and confidence from Whisper on the vocal stem."""
     import soundfile as sf
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=4)
@@ -923,7 +927,7 @@ def transcribe_words(vocals: NDArray[np.float32], model_name: str, lang: str | N
         sf.write(path, vocals, SAMPLE_RATE, subtype="FLOAT")
         # Silero VAD drops vocals that sit under music, so every window is decoded.
         segments, _ = model.transcribe(str(path), language=lang, word_timestamps=True, vad_filter=False)
-        words = [Word(round(w.start + offset, 3), round(w.end + offset, 3), round(w.probability, 3))
+        words = [Word(round(w.start + offset, 3), round(w.end + offset, 3), round(w.probability, 3), w.word.strip())
                  for s in segments for w in (s.words or []) if w.end > w.start]
     return words
 
@@ -1048,6 +1052,8 @@ def timeline_json(an: Analysis) -> dict[str, Any]:
         "picture": picture,
         "audio": asdict(an.audio) if an.audio else None,
         "words": [asdict(w) for w in an.words],
+        "word_text_source": "Whisper recognition, not verified lyrics" if any(w.text is not None for w in an.words) else None,
+        "lyrics": asdict(an.lyrics) if an.lyrics else None,
         "phrases": [asdict(p) for p in an.phrases],
         "sections": [asdict(s) for s in an.sections],
         "sheets": asdict(an.sheets) if an.sheets else None,
@@ -1369,9 +1375,10 @@ def _cut_table(an: Analysis) -> list[str]:
     lines = ["## Cut by cut", "",
              "Each row is measured at its first frame. For a shot after a dissolve, that is the first blended "
              "frame. Beat, onset and word give the nearest event and the row's offset from it (+ means the row "
-             f"starts after the event); events more than {REACH:g} s away are left out. \"On\" lists events within "
-             f"{SYNC:.2f} s.", "",
-             "| # | Row | In–out (s) | Length | Enter | Beat | Strong onset | Word edge | On |",
+             f"starts after the event); events more than {REACH:g} s away are left out. \"Near\" lists events within "
+             f"{SYNC:.2f} s. Proximity is descriptive, not a sync score or a recommendation to cut. "
+             "These are nearest events, not the editor's named targets; a word edge may be any recognized word.", "",
+             "| # | Row | In–out (s) | Length | Enter | Beat | Strong onset | Word edge | Near |",
              "|---|---|---|---|---|---|---|---|---|"]
     dissolve_of = {d.shot: d for d in an.picture.dissolves}
     for n, s in enumerate(an.picture.segments, 1):
@@ -1452,10 +1459,24 @@ def _audio_detail(an: Analysis) -> list[str]:
                   f"**Strong onsets** (at or above the {ONSET_PERCENTILE:g}th percentile of onset strength): "
                   f"{' '.join(f'{t:.2f}' for t in audio.onsets)}", ""]
     if an.phrases:
-        lines += ["**Word timings** by phrase:", ""]
+        lines += ["**Recognized words** by phrase (raw Whisper text and confidence; not verified lyrics). "
+                  "Missing text is shown as unknown; confidence does not establish timing accuracy.", ""]
         for i, p in enumerate(an.phrases, 1):
             timed = [w for w in an.words if p.start <= w.start and w.end <= p.end]
-            lines.append(f"{i}. " + ", ".join(f"{w.start:.2f}–{w.end:.2f}" for w in timed))
+            lines.append(f"{i}. " + ", ".join(
+                f"{w.start:.2f}–{w.end:.2f} {json.dumps(w.text, ensure_ascii=False) if w.text is not None else '[text unknown]'} "
+                f"(p={w.probability:.2f})" for w in timed))
+        lines.append("")
+    else:
+        lines += ["**Recognized words:** none available. Lyric word timing has not been checked by this analysis.", ""]
+    if an.lyrics is not None:
+        ref = an.lyrics
+        lines += ["## Published lyric reference", "", f"Source: {ref.source}", f"File: {ref.path}", "",
+                  f"Alignment: {ref.alignment}. Recognized words above remain separate; missing or different "
+                  "words have not been corrected or matched automatically.", ""]
+        for line in ref.lines:
+            at = f"{line.start:.2f} s" if line.start is not None else "time unknown"
+            lines.append(f"- {at}: {line.text or '[line ends]'}")
         lines.append("")
     return lines
 
@@ -1503,11 +1524,21 @@ def main() -> None:
                     help="faster-whisper model for word timings (default small.en)")
     ap.add_argument("--lang", help="language code for a multilingual Whisper model; default auto-detect")
     ap.add_argument("--no-words", action="store_true", help="skip Whisper word timings")
+    ap.add_argument("--lyrics", type=Path, help="published lyrics as LRC or text; kept separate from recognition")
+    ap.add_argument("--lyrics-source", help="URL or attribution for --lyrics (defaults to its local path)")
     ap.add_argument("--no-texture", action="store_true",
                     help="skip the key, instrument and genre tags (Essentia; models download on first use)")
     ap.add_argument("--stem-cache", type=Path, default=separation.CACHE_DIR,
                     help=f"folder for the cached stems, shared between runs (default {separation.CACHE_DIR})")
     a = ap.parse_args()
+    if a.lyrics_source and a.lyrics is None:
+        ap.error("--lyrics-source needs --lyrics")
+    reference = None
+    if a.lyrics is not None:
+        try:
+            reference = lyric_reference.read(a.lyrics, a.lyrics_source)
+        except (OSError, UnicodeError) as e:
+            ap.error(f"cannot read lyrics: {e}")
     media, out = a.media.resolve(), a.out_dir.resolve()
     if not media.is_file():
         ap.error(f"no such file: {media}")
@@ -1582,7 +1613,7 @@ def main() -> None:
     sheets = write_sheets(info, picture, out, a.caption_band, a.caption_step) if picture is not None else None
     analysis = Analysis(info, picture, audio, words, phrases, build_sections(info, picture, audio, phrases), sheets,
                         Settings(a.cut_threshold, a.min_shot, a.caption_band, a.caption_step, model, a.lang,
-                                 texture is not None), texture)
+                                 texture is not None), texture, reference)
     save(out / "timeline.json", timeline_json(analysis))
     if picture is not None:
         save(out / "frames.json", [{"frame": i, "time": analysis.time(i)} | asdict(s)

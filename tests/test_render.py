@@ -237,9 +237,30 @@ class RenderTests(unittest.TestCase):
         shutil.copytree(self.root / "out" / render.CACHE_DIR, out / render.CACHE_DIR)
         edl = copy.deepcopy(EDL)
         edl["clips"][0]["why"] = "Reworded reasoning."
+        edl["clips"][0]["sync_points"] = [{'t': .5, 'target_time': .48, 'label': 'named cue'}]
         summary = render.render(write_edl(self.root, "reworded.json", edl), out / "edit.mp4")
         self.assertIn("0 segments rendered", summary)
         self.assertIn("Reworded reasoning.", (out / "edl_table.md").read_text())
+
+    def test_proof_hides_intention_but_can_show_named_in_shot_cues(self) -> None:
+        data = copy.deepcopy(EDL)
+        data['clips'][0]['why'] = 'UNIQUEINTENTION'
+        data['clips'][0]['sync_points'] = [{'t': .5, 'target_time': .48, 'label': 'UNIQUECUE'}]
+        edl = parse_edl(data)
+        draw_text = render.ImageDraw.ImageDraw.text
+        for show in (False, True):
+            drawn = []
+            def record(draw, xy, text, *args, **kwargs):
+                drawn.append(text)
+                return draw_text(draw, xy, text, *args, **kwargs)
+            out = self.root / f'proof-{show}.jpg'
+            with mock.patch.object(render.ImageDraw.ImageDraw, 'text', autospec=True, side_effect=record):
+                render.write_proof(self.root / 'out/edit.mp4', edl, self.root, out, show_intent=show)
+            text = ' '.join(drawn)
+            self.assertEqual('UNIQUEINTENTION' in text, show)
+            self.assertEqual('UNIQUECUE' in text, show)
+            self.assertEqual('declared sync' in text, show)
+            self.assertEqual('action' in text, show)
 
     def test_source_timing_reverse_and_speed(self) -> None:
         out = self.root / "ramp" / "ramp.mp4"
@@ -789,6 +810,20 @@ class EdlValidationTests(unittest.TestCase):
         edl = parse_edl(EDL)
         self.assertEqual([c.sync for c in edl.clips], ["free", "drop", "beat", "phrase_end"])
         self.assertEqual(edl.clips[1].why, "White flash into green on the drop.")
+
+    def test_named_cues_support_in_shot_actions_and_frame_offsets(self) -> None:
+        data = copy.deepcopy(EDL)
+        data['clips'][1]['sync_points'] = [{'t': .526, 'target_time': 1.52, 'label': 'voice returns', 'kind': 'onset'}]
+        clip = parse_edl(data).clips[1]
+        notes = render.sync_point_notes(clip, FPS)
+        self.assertIn('picture 1.550 s', notes[0])
+        self.assertIn('offset +0.030 s', notes[0])
+        data['clips'][1]['sync_points'][0]['t'] = 1
+        self.assertTrue(any('sync_points[0].t' in p for p in self.problems(data)))
+        data['clips'][1]['sync_points'][0].update(t=0, target_time=99, label=' ')
+        problems = self.problems(data)
+        self.assertTrue(any('sync_points[0].target_time' in p for p in problems))
+        self.assertTrue(any('sync_points[0].label' in p for p in problems))
 
     def test_reasoning_is_optional(self) -> None:
         edl = copy.deepcopy(EDL)

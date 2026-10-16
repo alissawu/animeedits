@@ -39,19 +39,19 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Tell apart from: Nobara Kugisaki (also a brown bob, but orange-brown and with a tool belt and hammer; 2018 setting with Yuji and Megumi); Mimiko Hasaba (brown hair but a sailor uniform); Utahime Iori (black hair, shrine-maiden clothes)
 
 ### Utahime Iori
-- Hair: long blackish-purple hair with blunt straight-cut bangs; two front locks hang over the shoulders, each bound with red-and-black ties
+- Hair: long, straight blackish-purple hair with blunt straight-cut bangs, the sides braided back, and a large white bow at the back of the head
 - Eyes: brown, often scowling or comically angry
 - Outfit: shrine-maiden (miko) outfit: white wide-sleeved top, red pleated hakama with a red bow, brown boots
-- Accessories: none notable; as an adult, a scar across the nose and right cheek
-- Other forms: not seen in eps 9–11. The 2006 version (eps 1 and 3) has no scar
-- Tell apart from: Riko Amanai (similar dark hair, but a sailor uniform and white headband); Misato Kuroi (black maid dress); Mei Mei (silver hair, black suit); Ogami's schoolgirl disguise (long black hair, but a white shirt, sweater vest and ribbon tie)
+- Accessories: a broad pale scar across the nose and both cheeks
+- Other forms: leads Yuji, Megumi and Nobara through a parking garage and a basement to Kokichi Muta's empty decoy room (ep 6); sitting beside Gojo in a hazy grey memory (ep 6); with the Kyoto students on a train (ep 20) and arriving with them at the end (ep 22). Under the green basement light her white clothes and bow read mint, under red light her hair reads red-brown
+- Tell apart from: Riko Amanai (similar dark hair, but a sailor uniform and white headband); Misato Kuroi (black maid dress); Mei Mei (silver hair, purple dress); Ogami's schoolgirl disguise (long black hair, but a white shirt, sweater vest and ribbon tie); Nobuko Takada (long black twin tails, no scar, idol clothes)
 
 ### Mei Mei
-- Hair: pale silver-blue. As an adult (2018), one thick braid hanging down over the front of her face, covering one eye; in tight close-ups loose strands hang over her face and the braid may be out of frame. In 2006 (not in these episodes), a high ponytail with two long front locks
+- Hair: pale silver-blue, in one long thick braid that hangs over a shoulder or down her back, with long bangs falling over one eye; in tight close-ups loose strands hang over her face and the braid may be out of frame. Under warm sunset light it reads cream-blonde
 - Eyes: lilac, narrowed or closed in a smile; long lashes
-- Outfit: dark purple long-sleeved dress with puffed shoulders, baggy purple pants tucked into light brown boots; purple nails
+- Outfit: dark purple long-sleeved dress with puffed shoulders and a high ribbed collar, baggy purple pants tucked into light brown boots; purple nails and lipstick. Playing ping-pong with Todo (ep 6): white polo with lavender trim, short black skirt with a purple side stripe, white sneakers
 - Accessories: a huge battle axe and crows; a small square earring; usually next to her little brother Ui Ui
-- Other forms: in a subway tunnel with Ui Ui and Yuji (end of ep 9, ep 10); a chibi comedy panel with Ui Ui and Yuji (ep 10); a silhouette with her axe in the opening song
+- Other forms: in Gakuganji's sunset-lit office and at ping-pong with Todo in a wooden gym (ep 6); in a subway tunnel with Ui Ui and Yuji (end of ep 9, ep 10); a chibi comedy panel with Ui Ui and Yuji (ep 10); a silhouette with her axe in the opening song
 - Tell apart from: Satoru Gojo (short spiky white hair, male); Uraume (white chin-length bob, monk robes); Ui Ui (short hair, small boy); Kasumi Miwa (straight blunt bangs across the forehead, smiling with eyes closed, white shirt and tie, only in one bright imagined shot in ep 10); Mahito (stitched face)
 
 ### Ui Ui
@@ -77,6 +77,14 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Accessories: tinted sunglasses as an adult
 - Other forms: the adult appears only briefly in the opening song
 - Tell apart from: Shiu Kong (suit, no goatee); Jiro Awasaka (bald with a topknot tuft, handlebar mustache); Shigeru Sonoda (white tunic, bump on the forehead)
+
+### Yoshinobu Gakuganji
+- Hair: bald, with a long, elongated head and a dark mark on the forehead; long white eyebrows that droop down past his cheeks like tusks, and a long thin white beard to the chest
+- Eyes: tiny and sunken under the eyebrows; deeply wrinkled, dark-skinned old face
+- Outfit: white wide-sleeved kimono with purple at the waist
+- Accessories: a nose ring, rings in the lower lip, several gold rings along the upper ear and a hoop in the lobe
+- Other forms: ep 6: seated at a desk with an antique rotary phone in his office, backlit by an orange sunset, with Todo and Mei Mei; the opening song
+- Tell apart from: Naobito Zenin (slicked-back white hair and a long thin mustache, grey haori, no beard); Jiro Awasaka (a dark hair tuft, handlebar mustache, T-shirt); Masamichi Yaga (dark hair, sunglasses, track jacket)
 
 ### Toji Fushiguro
 - Hair: straight black, messy, falling over the forehead and to the ears
@@ -134,6 +142,14 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Other forms: with Maki and Naobito (ep 10); the opening and ending songs
 - Tell apart from: Shoko Ieiri as a student (darker brown bob, mole, appears with teenage Gojo and Geto); Mimiko Hasaba (straight dark brown hair, sailor uniform); Nanako Hasaba (curly caramel hair, cardigan); Maki Zenin (dark green hair, glasses)
 
+### Yuko Ozawa
+- Hair: medium brown, shoulder-length, with short blunt bangs well above the brows; the sides fall in layered points that flip outward at the shoulders. In her middle-school memory: dark brown, almost black, chin-length bowl bob with heavy blunt bangs to the eyes
+- Eyes: amber-brown
+- Outfit: oversized cream cable-knit turtleneck sweater past the hips, lime-yellow skirt to the ankles, white low heels; taller than Nobara. In her middle-school memory: round chubby face and heavy-set build, navy sailor uniform with white collar stripes and a red neckerchief, navy pleated skirt, loose white socks
+- Accessories: a red-maroon crossbody bag
+- Other forms: ep 6 only: watching from across a street, then with Nobara (and later Megumi and Yuji) in a family restaurant, and alone on a station platform at sunset; her middle-school self in a pink-lavender memory, in a photo on her phone and as a faded double sitting beside her
+- Tell apart from: Nobara Kugisaki (also a brown bob, but orange-brown with bangs swept to one side, navy uniform); Mimiko Hasaba (dark hair, blunt bangs and a navy sailor uniform like young Yuko's, but a slim face, a white scarf and a stitched doll; ep 10 and later); Tsumiki Fushiguro (brown ponytail, hospital bed)
+
 ### Takuma Ino
 - Hair: messy light brown, dirty-blond in some light, mostly hidden under a black knit beanie (actually a rolled-up ski mask); he is the only character in a beanie, which reads maroon under red light
 - Eyes: pale blue
@@ -177,10 +193,18 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 ### Hanami
 - Hair: none; a smooth, pale helmet-like head with exposed teeth and two wooden branches sprouting from the eye sockets
 - Eyes: no eyes, only the branches; black zigzag lines down the face; a wide grin of bare teeth
-- Outfit: very tall and muscular, pale beige body covered in black vein-like lines; white cloth draped over the left arm and shoulder, black baggy pants with a white sash, bare clawed feet
-- Accessories: a big red flower on the left shoulder; roots and wooden attacks
+- Outfit: very tall and muscular, pale beige body (pale blue-white under the station lights) covered in black vein-like lines; the left arm is entirely black, sometimes covered by a white cloth draped over the left shoulder and arm, sometimes bare (ep 8); black baggy pants with a white sash, bare clawed feet
+- Accessories: a big red flower, or a closed red bud, on the left shoulder; roots and wooden attacks
 - Other forms: roots and branches bursting from the floor; crushed to dust against a wall (ep 9); seated at the table in the mahjong flashback (ep 9). Dead after ep 9 except in the opening song
 - Tell apart from: Jogo (volcano head, spotted cape); transfigured humans (deformed grey, blue or pink bodies, no branches or flower)
+
+### Ko-Guy
+- Hair: none; a long, narrow bright-green grasshopper head with thin yellow antennae
+- Eyes: two large orange almond-shaped insect eyes outlined in black; a huge jaw of long yellow-green fangs (a striped yellow grille when shut) and a purple tongue
+- Outfit: none; a hulking, muscular, man-shaped olive-khaki body with four arms and purple claws, a dark green carapace with black leopard-like blotches over the back, shoulders and head, two pairs of long translucent lilac wings, and a long segmented green-and-purple abdomen hanging between its legs
+- Accessories: bleeds and spits purple
+- Other forms: ep 8 only, in a warm-lit tiled corridor of Meiji-Jingumae Station, eating a man in a dark suit, then fighting Yuji, who tears off its abdomen; often crouched on all fours
+- Tell apart from: Jogo (black spots on yellow-green too, but on a cape; volcano head, one eye, white fur collar); transfigured humans (no antennae, wings or insect eyes); the translucent giant grasshopper in a painted locust-plague explainer (ep 8), which is not Ko-Guy
 
 ### Choso
 - Hair: spiky dark brown hair tied into two short tufts sticking up and out on top
@@ -206,6 +230,14 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Other forms: stands near Kenjaku and the curses on B5F (eps 9–10); in ep 11 only in the opening song
 - Tell apart from: Jogo (volcano head, one eye, spotted cape); Mimiko Hasaba's doll (also a small red octopus-like thing, but a stitched plush with blue button eyes and a rope noose, held low beside the twins)
 
+### Smallpox Deity
+- Hair: a mass of long, shaggy dark fur hanging over the whole face and a hunched, dome-shaped body
+- Eyes: none visible; instead a huge fixed grin of large, flat, white human-like teeth ringed by thick dark fur-fringed lips, with two long curved pale tusks on either side of the mouth
+- Outfit: none; grey, mottled, stone-textured hands with dark nails, sometimes many hands at once around the mouth
+- Accessories: its domain: a graveyard at night in a cedar forest, with weathered gravestones, stone lanterns, frosty pale-blue ground, a dark wooden upright coffin with double doors and gold ring pulls, and a giant egg-shaped boulder wrapped in a thick rope with white zigzag paper streamers that falls on the coffin
+- Other forms: summoned by Kenjaku against Mei Mei (end of ep 12); in its domain, mostly in dark cyan close-ups (ep 14 cold open); bleeds purple; killed by a crow (ep 14). Mei Mei's imagined death shows red-tinted bald skeletal corpses reaching out of the ground; they are not transfigured humans
+- Tell apart from: transfigured humans (human-shaped bodies, no fur or tusks); Kenjaku's other summoned curses (the long dragon-like serpent beside him in the subway tunnel)
+
 ### Uraume
 - Hair: straight white chin-length bob with blunt bangs and a crimson or dark plum-red patch at each temple
 - Eyes: dark pink-red or pinkish-purple, long lashes, blank or faintly smiling; androgynous face
@@ -215,7 +247,7 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Tell apart from: Satoru Gojo (spiky hair, uniform); Mei Mei (braid, purple dress); Toge Inumaki (collar over the mouth); Kasumi Miwa (long blue hair)
 
 ### Maki Zenin
-- Hair: dark green, tied back in a short ponytail, with bangs and strands framing the face
+- Hair: dark green, tied high at the crown in a long ponytail, with blunt bangs and long side locks framing the face
 - Eyes: amber, behind rectangular glasses (frames read pink-purple at night, thin and pale in daylight)
 - Outfit: navy Jujutsu High jacket with a long pencil skirt, black tights, black shoes; athletic build
 - Accessories: glasses; a long red sword bag on her shoulder; polearm or other weapons
@@ -247,12 +279,12 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Tell apart from: Masamichi Yaga (goatee, track jacket); Toji (no topknot); Kenjaku (long loose hair, priest robes, no scar); Jiro Awasaka (bald, mustache)
 
 ### Kasumi Miwa
-- Hair: long, straight, light blue, with blunt bangs
-- Eyes: blue; smiling with eyes closed
-- Outfit: black suit-like uniform jacket with a white shirt and black tie
-- Accessories: katana
-- Other forms: one brief imagined shot in a bright room (ep 10); the opening song
-- Tell apart from: Ui Ui (mint hair, small boy); Mei Mei (silver braid over the face); Mahito (stitches)
+- Hair: long, straight, light blue, with blunt bangs across the forehead; under warm light it reads blue-grey, against white glare silver
+- Eyes: blue-violet when open; often smiling or laughing with eyes closed
+- Outfit: black suit-like uniform jacket with a white shirt and black tie, dark trousers, brown loafers
+- Accessories: katana with a red-and-white diamond-wrapped hilt
+- Other forms: at Kyoto Jujutsu High with the Mechamaru puppet, carrying notebooks (ep 6) and sitting by the sleeping puppet on a red bench at sunset (ep 7); drawing her sword in a black void (ep 7, illustrating New Shadow Style); brief bright imagined shots (eps 6, 7, 10); crying on a train while Mechamaru's communicator talks to her, with an imagined Kokichi reflected in the window (ep 20); attacking Kenjaku with her sword (ep 22); a chibi; the opening song
+- Tell apart from: Ui Ui (mint hair, small boy); Mei Mei (silver braid, purple dress, bangs over one eye); Mahito (stitches, no bangs); Uraume (white chin-length bob, robes); Momo Nishimiya (blonde upturned pigtails, black dress, broom)
 
 ### Kiyotaka Ijichi
 - Hair: black, mid-length, parted over the forehead
@@ -279,20 +311,20 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Tell apart from: Jiro Awasaka (bald with a topknot, T-shirt and shorts); Ogami (old woman, bun); Satoru Gojo (young, spiky white hair)
 
 ### Akari Nitta
-- Hair: short blonde bob
-- Eyes: pale blue
-- Outfit: black suit, white shirt, red tie
-- Accessories: none
-- Other forms: appears only in the opening song
-- Tell apart from: Kento Nanami (tan suit, goggles, man)
+- Hair: blonde chin-length bob with darker roots at the crown, parted to one side
+- Eyes: dark grey
+- Outfit: charcoal-grey three-button suit, white shirt, red tie
+- Accessories: a dangling ring earring with a small blue bead
+- Other forms: the manager briefing Team Zenin (Naobito, Maki, Nobara) by a mirrored-glass sculpture (ep 7); with Nobara against Haruta Shigemo, slashed at the ankles, kicked and stabbed, then sitting injured beside Nobara (ep 12); urging Nobara to leave (ep 19); the opening song
+- Tell apart from: Kento Nanami (blond, but a man in a tan suit with goggles); Arata Nitta (her younger brother: light straight chin-length hair, but a boy in a black tailcoat-like uniform with a grey vest); Haruta Shigemo (blond ponytail, overalls); Momo Nishimiya (blonde pigtails, black dress)
 
 ### Mechamaru (Kokichi Muta)
-- Hair: none
-- Eyes: two glowing green eyes
-- Outfit: none; seen as a small round brown communicator shaped like Mechamaru's robot face (green eyes, a grille mouth, a crest on top), clipped to Yuji's ear or hidden near the Prison Realm (end of ep 9, ep 10)
-- Accessories: green glowing light and green data streaks
-- Other forms: the big robot Mechamaru fighting Mahito in a pale flashback (ep 10); a chibi version beside Ui Ui (ep 10); a line drawing in the ep 9 preview
-- Tell apart from: anyone else; Ino's glowing summons are yellow-green drills or black liquid, not a face
+- Hair: the puppets have none (a boxy brown robot head). Kokichi's own healed body: messy black jaw-length hair with long bangs over the eyes and a small spiky topknot tied high on the back of the crown
+- Eyes: the puppets' eyes glow green (the cockpit puppet's two almond eyes, the school puppet's round or spiral ones); the swarm puppets' eyes glow yellow-green; the giant robot has a chain of small glowing red or cyan dots down its face plate. Kokichi's own eyes are grey-blue
+- Outfit: the Kyoto school puppet: navy-black Kyoto uniform with a thick white puffy wrapped collar, a white rope belt and bare mechanical feet. Kokichi healed (eps 6–7): a navy-black school jacket with one gold button, a thick pale grey padded scarf wrapped high round the neck, a white sash; shirtless with loose bandage strips right after Mahito heals him. Kokichi's real body before healing (ep 6): bandaged head to waist (bandages read hot pink under the red light), shaggy black hair poking out of the head wrap, sunken red-rimmed eyes, cracked lips, sitting in a white tub of red liquid among cables and IV bags
+- Accessories: Kokichi: a wide pale scar band from the bridge of the nose across his left cheek; black cords tying his wrists to the cockpit controls; metal tubes leaking cyan liquid. The puppets: a dark jagged or hooked mark on the forehead and a grille mouth of square teeth; green glowing light and green data streaks
+- Other forms: Ultimate Mechamaru Mode: Absolute (eps 6–7): a giant muscular humanoid robot in white and pale silver-blue armor (pink-white under red light, gold in daylight), a narrow helmet head with a dark face plate, a mass of dark cable "dreadlocks" hanging from the back of its head, palm cannons, rising from a lake at a dam in rain; its wreck in a forest by day (ep 7); a silhouette with red eyes in the opening song. A swarm of about twenty bare brown humanoid puppets (ep 6). A man-sized puppet with several arms inside the red-lit cockpit (ep 7). A small round communicator shaped like the puppet's face (green eyes, grille mouth, a crest on top), clipped to Yuji's ear or hidden near the Prison Realm (eps 9–10) and in a flooded station bathroom (ep 13), and talking to Kasumi Miwa on a train (ep 20). The big robot fighting Mahito in a pale flashback (ep 10); chibi versions (eps 6, 7, 10); Kokichi imagined sitting beside Miwa, reflected in a train window (ep 20); line drawings in the previews
+- Tell apart from: Ino's glowing summons (yellow-green drills or black liquid, not a face). Kokichi's healed body vs Megumi Fushiguro (spiky black hair and a navy uniform too, but no topknot, scarf or cheek scar), Toji Fushiguro (scar at the mouth, not across the cheek), Kenjaku (long hair, priest robes) and Choso (two tufts, blood stripe across the nose)
 
 ### Niji Ebina
 - Hair: brown bowl-cut bangs under a green frog- or chameleon-like curse worn on his head like a hood, with two bulging eyes on top
@@ -309,6 +341,30 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Accessories: a long knife or machete
 - Other forms: ep 10 only, stabbing Ijichi on a street at dusk
 - Tell apart from: Kento Nanami (short neat blond hair, suit); Ogami's Grandson (mohawk); Takuma Ino (beanie, black sweatshirt)
+
+### Manami Suda
+- Hair: long, straight and fine, past the shoulders down the back, swept back off the forehead with side bangs; dusty peach-pink at night and in firelight, ash-beige in dim green light
+- Eyes: narrow and dark, often side-eyeing
+- Outfit: an ankle-length fitted dark plum dress with fine vertical pinstripes, sleeveless with a ribbed high neck (crimson under red light); a white jacket with a tall standing collar and two square buttons draped over her shoulders, sleeves hanging empty
+- Accessories: none; usually a hand on her hip
+- Other forms: ep 16 only: with Negi confronting Kusakabe and Panda on a ramp outside Shibuya Stream, and in a dim grey-green flashback of Geto's former followers arguing (with Negi, Larue and the Hasaba twins)
+- Tell apart from: Shoko Ieiri (long hair and a white coat too, but a lab coat worn with its sleeves on, a teal turtleneck, brown hair and a mole); Nanako Hasaba (caramel bun and ringlets, sailor collar); Yuki Tsukumo (blonde, jeans)
+
+### Toshihisa Negi
+- Hair: messy dark-brown, short to mid-length
+- Eyes: a thick white bandage cloth wrapped round his head diagonally over his right eye, scrape marks below it; the other eye dark
+- Outfit: tall and broad; a black long-sleeved high-necked bodysuit under a white robe (pale blue at night) draped off one shoulder with wide short sleeves and a white sash; black baggy trousers, white bandage wraps on the shins, black shoes
+- Accessories: none
+- Other forms: ep 16 only: with Manami on the ramp, raising his hand; in the followers' flashback. Three unnamed curse users with them, faces never shown, wear the same kind of white wrap top with a wide black sash, baggy black trousers and shin wraps (one has a white hood and a dagger); they are not Negi
+- Tell apart from: Satoru Gojo (his blindfold is black, across both eyes); the three hooded curse users (no eye bandage, no robe off the shoulder); Uraume (white bob, robes)
+
+### Larue
+- Hair: straight blond hair to the jaw or shoulders, pushed off the forehead by a thin teal-blue hairband
+- Eyes: heavy brows, often closed in a smile; long face, strong jaw
+- Outfit: shirtless and massively muscular, with a flat pink heart shape on the chest; pale baggy trousers, white shoes
+- Accessories: none; usually stands with arms crossed
+- Other forms: ep 16 only, in the flashback of Geto's former followers in a dim abandoned concrete building
+- Tell apart from: Haruta Shigemo (blond and bare-shouldered too, but one side ponytail, overall straps, slight build); Kento Nanami (blond, but a suit or shirt and goggles); Aoi Todo (black topknot, scarred face)
 
 ### Riko Amanai
 - Hair: very dark navy hair with bangs, the rest in one long braid
@@ -381,6 +437,14 @@ Setting: Halloween night, October 31, 2018, in and around Shibuya. Episode numbe
 - Accessories: sprays water from its trunk
 - Other forms: dropped on Awasaka from above (ep 11)
 - Tell apart from: no one
+
+### Mahoraga (Eight-Handled Sword Divergent Sila Divine General Mahoraga)
+- Hair: none; a long, curved, horn-like tail with dark ring bands curving from the back of the head, and above the head a wheel: a ring with eight spokes and eight balls on the rim, bronze or olive-gold (black in silhouette, red-orange in the domain)
+- Eyes: none: two pairs of white feathered wings sprout sideways from where the eyes would be; a wide grimace of big square pale teal-green teeth
+- Outfit: towering, hugely muscular body drawn near-white with grey shading and a soft glow; a black chain necklace of ring links with hanging cross-shaped ornaments; a dark green-black hakama with a white sash; black rings at the wrists and ankles; bare feet
+- Accessories: the right forearm wrapped in grey bandage with black bands, from which a long, flat, pointed dark-grey sword comes out (the Sword of Extermination)
+- Other forms: ep 17 only (its bare feet walk across a crosswalk at the end of ep 16). Before it hatches, a glowing cream-white hunched shell wrapped in thin black cables, with a round fanged mouth on top, then a glowing column sprouting four grey wings; slashed with red cuts, bound in cables, enlarged to fill the frame (pink-white under the red sky, with Sukuna standing on its palm), burning; its bronze wheel left lying on cracked ground. Often drawn in stylized frames (black-and-white ink, inverted cyan, rainbow, pink haze)
+- Tell apart from: Rika Orimoto's curse form (huge, white and toothy too, but no wings, wheel or hakama); Hanami (pale and muscular, but branches for eyes and a red flower); Divine Dog: Totality (a black wolf)
 
 ### Rabbit Escape
 - Hair: white fur
