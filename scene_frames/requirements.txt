@@ -12,7 +12,10 @@ scipy>=1.13
 # Voice stems for audio layers (stem "voice", separate.py) and the four song stems for analyze_edit.py (stems.py,
 # htdemucs): BS-RoFormer and Demucs through audio-separator, which
 # brings torch (about 600 MB installed). Its cpu extra is onnxruntime, imported even for torch models.
-audio-separator[cpu]>=0.47,<0.48
+# 0.46+ requires torch>=2.13 on Apple Silicon, conflicting with lyricsync's
+# torchaudio 2.5.1 forced-alignment API. Keep the compatible separator release.
+audio-separator[cpu]==0.45.0; sys_platform == "darwin" and platform_machine == "arm64"
+audio-separator[cpu]>=0.47,<0.48; sys_platform != "darwin" or platform_machine != "arm64"
 # audio-separator imports audioread, which librosa 1.0 no longer installs.
 audioread>=3
 soundfile>=0.12

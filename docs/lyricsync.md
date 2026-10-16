@@ -3,9 +3,27 @@
 Run with the repo Python 3.12 environment. Optional dependencies are separate so indexing/rendering do not require an aligner:
 
 ```sh
-uv pip install --python .venv -r scene_frames/requirements-lyricsync.txt
+uv pip install --python .venv -r scene_frames/requirements.txt -r scene_frames/requirements-lyricsync.txt
 python scene_frames/lyricsync.py media/song.m4a out/song-lyrics --lyrics media/sung.txt --lyrics-source "corrected sung reference" --video
 ```
+
+Install both requirement files together. On Apple Silicon, the base requirements pin audio-separator 0.45.0 to coexist with torch/torchaudio 2.5.1; other platforms keep 0.47. Newer separator releases require torch 2.13 on Apple Silicon, while [TorchAudio removed the forced-alignment API in 2.9](https://docs.pytorch.org/audio/2.9.0/tutorials/ctc_forced_alignment_api_tutorial.html). The [0.45.0 dependency declaration](https://github.com/nomadkaraoke/python-audio-separator/blob/v0.45.0/pyproject.toml) supports the older torch pair.
+
+### ffmpeg for caption videos
+
+Caption videos need ffmpeg with the `ass` filter (libass) and the `libx264` encoder. On Homebrew, use `ffmpeg-full`; the regular `ffmpeg` build may lack libass:
+
+```sh
+brew install ffmpeg-full
+brew unlink ffmpeg
+brew link --force ffmpeg-full
+ffmpeg -hide_banner -h filter=ass
+ffmpeg -hide_banner -h encoder=libx264
+```
+
+The link step makes existing tool commands use the full build without a PATH override. To switch back, run `brew unlink ffmpeg-full` then `brew link ffmpeg`.
+
+## Reference and alignment
 
 Supply exactly the words sung, in order, with one display line per text line. Plain text and LRC use the existing lyrics.py reader. LRC timestamps are retained as reference metadata, but are NOT alignment windows. Repeats must appear in the reference. For a mashup, edited clip, instrumental gap, added dialogue or missing verse, transcribe/correct the actual sung sequence first; do not blindly align a full published song. English A-Z/apostrophes only; numbers and other scripts are rejected rather than silently discarded.
 

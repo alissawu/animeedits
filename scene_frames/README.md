@@ -6,7 +6,9 @@ Index a whole show from its manifest in `shows/<show>/` with `show.py prepare SH
 
 Place every indexed shot in the story with `story.py OUT_DIR`. Claude reads a synopsis with the index's captions and lines, as text only, and writes `story.json`: scenes with a label, characters, a confidence, flags on caption names the scene contradicts, and every shot's names with those flags applied.
 
-Measure a short reference edit's cuts, flashes, beats and word timings, or map a song file from its stems (when drums, bass, other and vocals play, the turns and the drop, stops, loop breaks, bass roots, the voice per section, key and word timings), with `analyze_edit.py MEDIA OUT_DIR`; see [edit analysis](../docs/edit_analysis.md).
+Measure a short reference edit's cuts, flashes, beats and word timings, or map a song's stems, turns, drops, stops, loop breaks, bass roots and voice-shift review hints, with `analyze_edit.py MEDIA OUT_DIR`. Beat This! adds downbeats, bar numbers and beat positions. `--lyrics FILE` adds aligned reference lines and timed words with uncertainty while keeping raw Whisper words separate; `--lyric-video` requests caption video. See [edit analysis](../docs/edit_analysis.md).
+
+Align a checked English sung reference separately with `lyricsync.py MEDIA OUT_DIR --lyrics FILE [--video]`, reusing the vocal stem cache. Install `requirements-lyricsync.txt` alongside `requirements.txt` for its matching torch/torchaudio pair. `frames.py --edl EDL.json OUT.jpg --alignment alignment.json` overlays aligned words on cut-review sheets; add `--song-map timeline.json` for beats and drops. See [lyric alignment](../docs/lyricsync.md).
 
 Needs Python 3.11+, `requirements.txt` and ffmpeg/ffprobe. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 
