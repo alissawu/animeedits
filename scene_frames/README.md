@@ -8,6 +8,8 @@ Measure a short reference edit's cuts, flashes, beats and word timings, or map a
 
 Needs Python 3.11+, `requirements.txt` and ffmpeg/ffprobe. See [frame selection](../docs/frame_selection.md) and [the pipeline](../docs/pipeline.md) for options and outputs.
 
+`frames.py SOURCE IN OUT OUT.jpg` draws a board of every shot in a span, each with its first and last frames and in-between frames placed where the picture changes; `--dense` draws frames at a fixed rate with a change curve for picking cut points; `--edl EDL.json OUT.jpg` draws the frames either side of each cut in an edit, as render.py renders them. See [frames](../docs/pipeline.md#frames).
+
 `sheet.py OUT_DIR [--labels labels.json]` draws one contact sheet of every shot in a detect.py output directory, optionally with a line of text under each tile. The indexer builds its own numbered sheets for captioning, a few shots at a time.
 
 Tests: `python -m unittest discover -s tests` (the video tests generate their input with ffmpeg). Types: `mypy` from this directory (strict, configured in `mypy.ini`).
