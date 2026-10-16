@@ -26,7 +26,7 @@ Label = Literal["content", "white", "black"]
 SegmentKind = Literal["shot", "flash", "black"]
 
 # Bump a stage's version when its output changes, so cached results are recomputed.
-PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 2, 2, 1
+PICTURE_VERSION, AUDIO_VERSION, WORDS_VERSION = 3, 2, 1
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 ANALYSIS_SIDE = 128           # long side of the frames used for detection
 WHITE_LUMA = 140.0            # a flash frame averages at least this bright
@@ -38,7 +38,7 @@ SPIKE_MARGIN = 40.0           # a too-short piece this much brighter than both n
 CUT_THRESHOLD = 0.45          # adjacent frames cut when structure and edge distance both exceed this
 SAME_SHOT = 0.35              # across a flash or black, both distances below this mean the same shot
 PIXEL_GATE = 3.0              # mean RGB change below which nothing is a cut
-SPIKE_RATIO = 3.0             # a cut the distances miss changes this many times more than any frame near it
+SPIKE_RATIO = 2.5             # a cut the distances miss changes this many times more than any frame near it
 SPIKE_REACH = 0.3             # seconds either side that count as near
 SPIKE_HIST = 0.15             # and shifts the colour histogram at least this much
 SPIKE_EDGE = 0.55             # and changes its edges this much, more than CUT_THRESHOLD asks
