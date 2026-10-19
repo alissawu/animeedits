@@ -47,3 +47,81 @@ The shorter shots at the end mostly come from the source scene's own fast cuttin
 ## Treatment
 
 Minimal. The opening fades up from slightly dark over ~0.9s. Every other cut is hard, with no transitions or white flashes, just big brightness jumps between shots (bright Gojo, dark prison realm, bright aura). Shots 3, 9, 10 and 11 are nearly still. Shots 4 and 5 have real motion. Remaining noise and flicker look like gif quality, not editing effects. Footage is 10fps; whether any clip is slowed is unverified without the source episodes. No audio edits.
+
+---
+
+# Frame-level findings + what to verify against source
+
+Edit: satosugu-underyourspell-desire.mp4 (21.81s, 960x720, file says 30fps). Full breakdown: breakdowns/satosugu-under-your-spell.md.
+
+The aim is to (1) confirm these findings against the S2 episodes and (2) turn the measurements into a standard part of edit analysis (frame cadence, speed vs source, flicker/flash detection).
+
+## How the measurements were taken
+
+Per-frame stats came from ffmpeg signalstats:
+
+    ffmpeg -i edit.mp4 -vf "signalstats,metadata=print:file=luma.txt" -f null -
+
+- YAVG = average brightness of the frame (0-255). Use it for fades, flashes to white/black, and flicker.
+- YDIF = average pixel difference from the previous frame. 0 means the frame repeats the previous one, small means noise or a slight drift, large means motion, and a spike means a cut.
+
+Cuts are YDIF spikes (roughly >40) that come with a jump in YAVG.
+
+## Findings
+
+**Frame cadence.** Throughout, YDIF runs change, 0, 0, change, 0, 0. Each image is held for 3 frames, so this file has 10 new images per second.
+
+This does NOT show the edit was slowed down. The 30fps is only the export rate. The episodes are ~24fps, and anime is often drawn on 2s or 3s (about 8-12 new drawings per second). A gif can drop frames and still play at real speed. "Slowed" means a moment lasts longer than in the source, and that can only be checked by comparing durations.
+
+**Cuts (s):** 2.40, 4.00, 6.50, 9.20, 11.40, 13.00, 15.60, 18.20, 19.60, 20.90. Each one lands on the beat just before a lyric phrase (beat ~143.6 BPM, e.g. beat 2.39 then "don't sleep" at 2.68).
+
+**Per shot**
+
+| # | Time | Motion (median YDIF of changing frames) | Brightness | Notes |
+|---|---|---|---|---|
+| 1 | 0.0-2.4 | ~1 after fade | 98 to 121 | fades up over ~0.9s |
+| 2 | 2.4-4.0 | ~8 steady | 58 | small, constant change, probably gif noise |
+| 3 | 4.0-6.5 | ~0.7 | 56 | near-still |
+| 4 | 6.5-9.2 | ~25 | 34-117 | real motion, dips dark at 6.6-8.7 (fan animation?) |
+| 5 | 9.2-11.4 | ~16 | 125-138 | real motion |
+| 6 | 11.4-13.0 | ~2.6 | 29 | near-still, dark (prison realm) |
+| 7 | 13.0-15.6 | ~8 steady | 142-149 | same steady change as shot 2 |
+| 8 | 15.6-18.2 | ~6 | 79 | only 12 changing frames out of 78, so possibly a lower rate or partly held |
+| 9 | 18.2-19.6 | ~3 | 78-82 | near-still |
+| 10 | 19.6-20.9 | ~4 | 75-78 | near-still |
+| 11 | 20.9-21.8 | ~1.3 | 115 | near-still, video ends |
+
+**Treatment:** a fade-up at the start, otherwise all hard cuts. There are no white/black flash frames and no transitions. Alissa thinks the noise is gif quality, not an effect. No audio edits.
+
+## Please verify with the episodes
+
+Shot sources (Alissa's IDs):
+1. Geto stunned in the Yuki conversation, S2E5 (the "kill all non-sorcerers" line is at ~09:17)
+2. S2E5 ~07:15 (Yuki's "world where cursed spirits aren't born")
+3. S2E5 ~02:46 ("Satoru had become the strongest")
+4. Gojo, probably fan animation (not in the episodes?)
+5. Teen Gojo on the island (S2E1-3)
+6. Gojo in the prison realm (S2E9-10)
+7. Gojo aura scene (maybe S1)
+8. Teen Geto smiling at Gojo
+9. Kenjaku smiling at Gojo (S2E9)
+10-11. Gojo shocked, directly after 9
+
+For each shot:
+- Find the exact source timestamp.
+- **Speed:** time the same motion (start to end) in the source and in the edit. Equal means real speed, longer in the edit means slowed. Report the ratio.
+- **Frame rate:** count distinct drawings per second in the source vs the edit. This tells us whether the gif dropped drawings or the source was already drawn on 2s/3s.
+- **Trimming:** which part of the source shot was used, and whether it ends where the source cuts. This decides whether the short shots at 9-11 come from the scene's own pacing or the editor's choice.
+- Check whether shot 4's dark dips and the near-still shots match the source, or were added (freeze, flicker).
+
+## Make this standard for edit analysis
+
+Add a per-edit "frame report" step:
+1. Cadence per shot: the YDIF repeat pattern, giving new images per second.
+2. Cuts: YDIF spike + YAVG jump.
+3. Flashes/fades: brief YAVG spikes to near-white or near-black (flash), and gradual YAVG ramps (fade).
+4. Flicker: alternating YAVG dips inside a shot.
+5. Freezes: runs of YDIF ~0 longer than the cadence.
+6. Speed: compare against the matched source segment, as a duration ratio.
+7. Audio (when relevant): compare against the original song for volume/bass/edits.
+Report the numbers next to the stills, and don't infer intent from them alone. A slow-looking or fast-cut clip may simply be how the source was animated or what gifs were available.
